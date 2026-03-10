@@ -143,6 +143,8 @@ class SmartBotEngine:
         self.atr_history = {}  # ATR tracking per symbol
         self._tick_size_cache = {}  # Cache tick_size per symbol
         self._qty_precision_cache = {}  # Cache qty precision per symbol
+        self._exchange_info_cache = None  # Cache exchange info
+        self._exchange_info_ts = 0  # Timestamp of last fetch
         self.latest_analysis = {}  # Cache latest analysis per symbol for dashboard
         
         # Restore session state from previous run (same day only)
@@ -1292,13 +1294,20 @@ class SmartBotEngine:
                 position_value * leverage
             ) / entry_price
             
-            # Get symbol precision
-            exchange_info = (
-                self.client.client.futures_exchange_info()
-            )
+            # Get symbol precision (cached 1h)
+            if (
+                self._exchange_info_cache is None
+                or time.time() - self._exchange_info_ts > 3600
+            ):
+                self._exchange_info_cache = (
+                    self.client.client
+                    .futures_exchange_info()
+                )
+                self._exchange_info_ts = time.time()
             symbol_info = next(
                 (
-                    s for s in exchange_info['symbols']
+                    s for s in
+                    self._exchange_info_cache['symbols']
                     if s['symbol'] == symbol
                 ),
                 None
@@ -1389,8 +1398,13 @@ class SmartBotEngine:
                 tp_qtys = [
                     round(quantity * tp_levels[0], qty_precision),
                     round(quantity * tp_levels[1], qty_precision),
-                    round(quantity * tp_levels[2], qty_precision),
+                    0,  # placeholder
                 ]
+                # Last TP = remainder so sum == total (no dust)
+                tp_qtys[2] = round(
+                    quantity - tp_qtys[0] - tp_qtys[1],
+                    qty_precision
+                )
                 
                 # Place partial TP orders
                 for i, (tp_price, tp_qty) in enumerate(
@@ -1708,8 +1722,17 @@ class SmartBotEngine:
         if symbol in self._tick_size_cache:
             return self._tick_size_cache[symbol]
         try:
-            info = self.client.client.futures_exchange_info()
-            for s in info['symbols']:
+            if (
+                self._exchange_info_cache is None
+                or time.time() - self._exchange_info_ts
+                > 3600
+            ):
+                self._exchange_info_cache = (
+                    self.client.client
+                    .futures_exchange_info()
+                )
+                self._exchange_info_ts = time.time()
+            for s in self._exchange_info_cache['symbols']:
                 if s['symbol'] == symbol:
                     for f in s['filters']:
                         if f['filterType'] == 'PRICE_FILTER':
