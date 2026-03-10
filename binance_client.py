@@ -36,41 +36,46 @@ class BinanceFuturesClient:
         else:
             self.demo_account = None
         
-        # Sync client for general operations
+        # ping=False → KHÔNG gọi API nào trong constructor
+        # Mặc định Client() gọi ping() → gây ban IP nếu restart nhiều
         self.client = Client(
             api_key=self.api_key,
             api_secret=self.secret_key,
             testnet=self.config["trading"]["testnet"],
-            requests_params={'timeout': 10}
+            requests_params={'timeout': 10},
+            ping=False,
         )
-        
-        # Sync time with Binance server to avoid -1021 errors
+
+        # Time sync: 1 API call nhẹ duy nhất (weight=1)
         import time as time_module
-        import requests
+        import requests as _requests
         self.time_offset = -1500  # safe default
+        base_url = (
+            "https://testnet.binancefuture.com"
+            if self.config["trading"]["testnet"]
+            else "https://fapi.binance.com"
+        )
         try:
-            base_url = (
-                "https://testnet.binancefuture.com"
-                if self.config["trading"]["testnet"]
-                else "https://fapi.binance.com"
-            )
-            response = requests.get(
+            resp = _requests.get(
                 f"{base_url}/fapi/v1/time", timeout=5
             )
-            data = response.json()
+            data = resp.json()
             if 'serverTime' in data:
                 local_time = int(time_module.time() * 1000)
                 self.time_offset = data['serverTime'] - local_time
-                logger.warning(
-                    f"Time sync: offset={self.time_offset}ms"
+                logger.info(
+                    f"Time sync OK: offset={self.time_offset}ms"
                 )
+            elif data.get('code') == -1003:
+                msg = data.get('msg', 'IP banned')
+                logger.warning(f"Time sync: IP banned - {msg}")
+                raise Exception(msg)
             else:
-                # Rate limited or error response — don't raise
-                logger.warning(
-                    f"Time sync skipped: {data.get('msg', data)}"
-                )
-        except Exception as e:
-            logger.warning(f"Time sync failed (using default): {e}")
+                logger.warning(f"Time sync skipped: {data}")
+        except _requests.exceptions.RequestException as e:
+            logger.warning(
+                f"Time sync network error (using default): {e}"
+            )
         self.client.timestamp_offset = self.time_offset
         
         # Async client for real-time operations
