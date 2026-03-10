@@ -380,37 +380,85 @@ bot_manager.add_log("🚀 Dashboard started - Waiting for commands...")
 binance_client = None
 _client_last_retry: float = 0.0
 _CLIENT_RETRY_COOLDOWN = 300.0  # 5 phút - tránh gọi API khi đang bị ban
+_ban_until: float = 0.0  # epoch (s) khi ban hết hạn
 
 
 def _get_client():
-    """Lazy init: tạo client lần đầu hoặc retry sau cooldown."""
-    global binance_client, _client_last_retry
+    """Lazy init: tạo client lần đầu hoặc retry sau cooldown.
+    Parse ban expiry để không retry vô ích trong lúc bị ban."""
+    global binance_client, _client_last_retry, _ban_until
     if binance_client is not None:
         return binance_client
     import time as _t
     now = _t.time()
+    # Nếu biết đang bị ban, không thử cho đến khi hết
+    if _ban_until > 0 and now < _ban_until:
+        return None
     if now - _client_last_retry < _CLIENT_RETRY_COOLDOWN:
         return None  # vẫn trong cooldown, không thử lại
     _client_last_retry = now
+    # Pre-check nhẹ: gọi /fapi/v1/time (weight=1, không cần auth)
+    # Nếu vẫn ban thì không tạo Client() (tránh thêm ping call)
+    try:
+        import requests as _req
+        r = _req.get(
+            "https://fapi.binance.com/fapi/v1/time", timeout=5
+        )
+        data = r.json()
+        if 'code' in data and data['code'] == -1003:
+            _parse_ban_until(data.get('msg', ''))
+            logger.error("IP still banned, retry after ban expires")
+            return None
+    except Exception:
+        pass  # Network error → sẽ fail ở Client() bên dưới
     try:
         binance_client = BinanceFuturesClient()
-        logger.info("Binance client initialized (lazy)")
+        logger.info("Binance client initialized OK!")
+        _ban_until = 0.0
     except Exception as e:
-        logger.error(f"Client init failed (retry in 5m): {e}")
+        msg = str(e)
+        logger.error(f"Client init failed: {e}")
+        _parse_ban_until(msg)
         binance_client = None
     return binance_client
 
 
+def _parse_ban_until(msg: str):
+    """Trích ban expiry từ Binance error message."""
+    global _ban_until
+    import re
+    m = re.search(r'banned until (\d+)', msg)
+    if m:
+        _ban_until = int(m.group(1)) / 1000.0
+        import time as _t
+        remaining = _ban_until - _t.time()
+        if remaining > 0:
+            logger.warning(
+                f"IP ban expires in {remaining:.0f}s "
+                f"(~{remaining / 60:.1f} min)"
+            )
+
+
 # ── Background init thread ───────────────────────────────────────────────
-# Tự động thử init client sau 60s, tránh gọi API ngay khi khởi động
+# Tự động thử init client, đợi đúng thời điểm ban hết thay vì retry mù
 def _background_client_init():
     import time as _t
-    _t.sleep(60)  # Đợi 60s để app hoàn toàn khởi động + ban cũ hết hạn
+    _t.sleep(60)  # Đợi 60s để app khởi động xong
     while binance_client is None:
+        # Nếu biết ban chưa hết → đợi đúng thời điểm + 15s buffer
+        if _ban_until > 0:
+            wait = _ban_until - _t.time() + 15
+            if wait > 0:
+                mins = wait / 60
+                logger.info(
+                    f"Ban active, waiting {mins:.1f} min..."
+                )
+                _t.sleep(wait)
+                continue
         logger.info("Background: attempting Binance client init...")
         _get_client()
         if binance_client is None:
-            _t.sleep(300)  # Thử lại sau 5 phút
+            _t.sleep(300)  # Fallback 5 phút nếu không parse được ban
         else:
             logger.info("Background: Binance client ready!")
 
