@@ -408,7 +408,6 @@ class SmartBotEngine:
             
             logger.debug(f"📊 Using basic model for {symbol}")
             model_data = self.models[symbol]
-            model = model_data['model']
             
             # Get latest data
             klines = self.client.get_klines(symbol, "5m", 100)
@@ -452,8 +451,16 @@ class SmartBotEngine:
             )
             latest_features = X[-1].reshape(1, -1)
             
-            # Predict
-            probabilities = model.predict_proba(latest_features)[0]
+            # Predict — ensemble all available models
+            ensemble_models = [model_data['model']]
+            for mkey in ['model_xgb', 'model_hgb']:
+                if mkey in model_data:
+                    ensemble_models.append(model_data[mkey])
+            all_probs = [
+                m.predict_proba(latest_features)[0]
+                for m in ensemble_models
+            ]
+            probabilities = np.mean(all_probs, axis=0)
             n_classes = len(probabilities)
             
             if n_classes == 2:
@@ -473,7 +480,7 @@ class SmartBotEngine:
                     signal = 'SHORT'
             else:
                 # Legacy 3-class model: [SHORT(-1), HOLD(0), LONG(1)]
-                prediction = model.predict(latest_features)[0]
+                prediction = ensemble_models[0].predict(latest_features)[0]
                 prob_short = probabilities[0] * 100
                 prob_hold = probabilities[1] * 100
                 prob_long = probabilities[2] * 100
