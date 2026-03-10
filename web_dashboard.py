@@ -2392,6 +2392,63 @@ def get_logs():
         }), 500
 
 
+@app.route('/api/debug_status')
+def debug_status():
+    """Debug endpoint - xem trạng thái client, ban, env vars"""
+    import time as _t
+    now = _t.time()
+    env_api = os.environ.get('BINANCE_API_KEY', '')
+    env_secret = os.environ.get('BINANCE_SECRET_KEY', '')
+    env_testnet = os.environ.get('BINANCE_TESTNET', 'NOT SET')
+
+    # Test Binance API trực tiếp
+    api_test = "not tested"
+    try:
+        import requests as _req
+        r = _req.get(
+            "https://fapi.binance.com/fapi/v1/time",
+            timeout=5
+        )
+        api_test = r.json()
+    except Exception as e:
+        api_test = f"error: {e}"
+
+    return jsonify({
+        'code_version': 'v3-smart-ban',
+        'client_initialized': binance_client is not None,
+        'ban_until': _ban_until,
+        'ban_remaining_s': max(0, _ban_until - now),
+        'last_retry': _client_last_retry,
+        'retry_cooldown_remaining': max(
+            0, _CLIENT_RETRY_COOLDOWN - (now - _client_last_retry)
+        ),
+        'env_api_key_set': bool(env_api),
+        'env_api_key_prefix': env_api[:8] + '...' if env_api else 'MISSING',
+        'env_secret_set': bool(env_secret),
+        'env_testnet': env_testnet,
+        'binance_api_test': api_test,
+        'server_time_utc': datetime.utcnow().isoformat(),
+    })
+
+
+@app.route('/api/force_init', methods=['POST'])
+def force_init():
+    """Force init client ngay lập tức (reset cooldown)."""
+    global _client_last_retry, _ban_until
+    _client_last_retry = 0.0
+    _ban_until = 0.0
+    client = _get_client()
+    if client:
+        return jsonify({
+            'success': True,
+            'message': 'Client initialized!'
+        })
+    return jsonify({
+        'success': False,
+        'message': 'Init failed - check /api/debug_status'
+    }), 500
+
+
 @app.route('/api/clear_logs', methods=['POST'])
 def clear_logs():
     """Clear bot logs"""
