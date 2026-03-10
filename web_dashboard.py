@@ -166,16 +166,16 @@ class BotManager:
             import time
             symbols = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT']
 
-            # Stagger startup to avoid hammering API immediately
-            time.sleep(10)
+            # Đợi 30s để app khởi động xong + tránh gọi API quá sớm
+            time.sleep(30)
 
             while self.price_simulator_running:
                 try:
-                    if binance_client and binance_client.demo_account:
-                        # Fetch all prices in ONE request (weight=1 vs 3)
+                    client = _get_client()
+                    if client and client.demo_account:
                         try:
                             tickers = (
-                                binance_client.client
+                                client.client
                                 .futures_symbol_ticker()
                             )
                             ticker_map = {
@@ -184,15 +184,16 @@ class BotManager:
                             }
                             for symbol in symbols:
                                 if symbol in ticker_map:
-                                    binance_client.demo_account.update_price(
+                                    client.demo_account.update_price(
                                         symbol, ticker_map[symbol]
                                     )
                         except Exception as e:
                             logger.debug(f"Price fetch error: {e}")
 
-                    time.sleep(15)  # 15s interval - safe for rate limits
+                    time.sleep(30)  # 30s - an toàn cho rate limit
                 except Exception as e:
                     logger.debug(f"Price fetcher error: {e}")
+                    time.sleep(60)  # Lỗi thì đợi lâu hơn
 
         self.price_simulator_thread = threading.Thread(
             target=fetch_real_prices, daemon=True
@@ -373,36 +374,50 @@ logger.add(
 # Add initial log
 bot_manager.add_log("🚀 Dashboard started - Waiting for commands...")
 
-# Initialize Binance client globally
-try:
-    binance_client = BinanceFuturesClient()
-    logger.info("Global Binance client initialized")
-except Exception as e:
-    logger.error(f"Failed to initialize Binance client: {e}")
-    binance_client = None
-
-
+# ── Lazy Binance client ──────────────────────────────────────────────────
+# Không khởi tạo ngay khi import để tránh bị ban IP nếu Render restart
+# liên tục. Client chỉ được tạo khi có request đầu tiên thực sự cần.
+binance_client = None
 _client_last_retry: float = 0.0
-_CLIENT_RETRY_COOLDOWN = 120.0  # seconds - avoid hammering Binance when banned
+_CLIENT_RETRY_COOLDOWN = 300.0  # 5 phút - tránh gọi API khi đang bị ban
 
 
 def _get_client():
-    """Return binance_client, reinit only after cooldown to avoid ban loop."""
+    """Lazy init: tạo client lần đầu hoặc retry sau cooldown."""
     global binance_client, _client_last_retry
-    if binance_client is None:
-        import time as _t
-        now = _t.time()
-        if now - _client_last_retry >= _CLIENT_RETRY_COOLDOWN:
-            _client_last_retry = now
-            try:
-                binance_client = BinanceFuturesClient()
-                logger.info("Binance client re-initialized successfully")
-            except Exception as e:
-                logger.error(f"Client reinit failed: {e}")
-        else:
-            remaining = int(_CLIENT_RETRY_COOLDOWN - (now - _client_last_retry))
-            logger.debug(f"Client reinit cooldown: {remaining}s remaining")
+    if binance_client is not None:
+        return binance_client
+    import time as _t
+    now = _t.time()
+    if now - _client_last_retry < _CLIENT_RETRY_COOLDOWN:
+        return None  # vẫn trong cooldown, không thử lại
+    _client_last_retry = now
+    try:
+        binance_client = BinanceFuturesClient()
+        logger.info("Binance client initialized (lazy)")
+    except Exception as e:
+        logger.error(f"Client init failed (retry in 5m): {e}")
+        binance_client = None
     return binance_client
+
+
+# ── Background init thread ───────────────────────────────────────────────
+# Tự động thử init client sau 60s, tránh gọi API ngay khi khởi động
+def _background_client_init():
+    import time as _t
+    _t.sleep(60)  # Đợi 60s để app hoàn toàn khởi động + ban cũ hết hạn
+    while binance_client is None:
+        logger.info("Background: attempting Binance client init...")
+        _get_client()
+        if binance_client is None:
+            _t.sleep(300)  # Thử lại sau 5 phút
+        else:
+            logger.info("Background: Binance client ready!")
+
+_init_thread = threading.Thread(
+    target=_background_client_init, daemon=True
+)
+_init_thread.start()
 
 
 def _calc_balance(account: dict) -> dict:
@@ -490,9 +505,11 @@ def get_market_data():
     if cached:
         return jsonify(cached)
     try:
-        if not binance_client:
-            return jsonify({'success': False, 'error': 'Client not initialized'})
-        client = binance_client
+        client = _get_client()
+        if not client:
+            return jsonify(
+                {'success': False,
+                 'error': 'Client not initialized'})
         symbols = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT']
         
         market_data = {}
@@ -653,13 +670,13 @@ def bot_analysis():
                     f"Failed to load model {symbol}: {e}"
                 )
 
-        if not binance_client:
+        client = _get_client()
+        if not client:
             return jsonify({
                 'success': False,
                 'error': 'Client not initialized',
                 'analysis': {}
             })
-        client = binance_client
         analyzer = TechnicalAnalyzer()
 
         for symbol in symbols:
@@ -1914,7 +1931,8 @@ def get_positions():
     if cached:
         return jsonify(cached)
     try:
-        if binance_client is None:
+        client = _get_client()
+        if client is None:
             return jsonify({
                 'success': False,
                 'error': 'Binance client not initialized',
@@ -1923,7 +1941,7 @@ def get_positions():
             }), 500
         
         # Get positions using method that supports demo mode
-        positions = binance_client.get_open_positions()
+        positions = client.get_open_positions()
 
         # --- Fetch open algo orders to extract SL/TP per symbol ---
         # After 2025-12-09 STOP_MARKET/TAKE_PROFIT_MARKET → algo orders
@@ -1931,9 +1949,9 @@ def get_positions():
         sl_map = {}  # (symbol, positionSide) -> stop_price
         tp_map = {}  # (symbol, positionSide) -> tp_price
         try:
-            if not binance_client.is_demo_mode:
+            if not client.is_demo_mode:
                 algo_orders = (
-                    binance_client.client
+                    client.client
                     .futures_get_open_orders(conditional=True)
                 )
                 for o in algo_orders:
@@ -2282,10 +2300,11 @@ def check_usdc():
 def test_connection():
     """Test Binance API connection"""
     try:
-        if binance_client:
+        client = _get_client()
+        if client:
             # Try to get server time - simple API call
-            server_time = binance_client.client.get_server_time()
-            mode = "Paper Trading" if binance_client.is_demo_mode else "Live Trading"
+            server_time = client.client.get_server_time()
+            mode = "Paper Trading" if client.is_demo_mode else "Live Trading"
             
             return jsonify({
                 'success': True,
