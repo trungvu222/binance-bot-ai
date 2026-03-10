@@ -40,7 +40,8 @@ class BinanceFuturesClient:
         self.client = Client(
             api_key=self.api_key,
             api_secret=self.secret_key,
-            testnet=self.config["trading"]["testnet"]
+            testnet=self.config["trading"]["testnet"],
+            requests_params={'timeout': 10}
         )
         
         # Sync time with Binance server to avoid -1021 errors
