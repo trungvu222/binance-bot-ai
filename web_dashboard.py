@@ -164,30 +164,31 @@ class BotManager:
             import time
             symbols = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT']
 
+            # Stagger startup to avoid hammering API immediately
+            time.sleep(10)
+
             while self.price_simulator_running:
                 try:
                     if binance_client and binance_client.demo_account:
-                        # Fetch REAL prices from Binance API
-                        for symbol in symbols:
-                            try:
-                                # Get real-time price from Binance
-                                ticker = (
-                                    binance_client.client
-                                    .futures_symbol_ticker(symbol=symbol)
-                                )
-                                real_price = float(ticker['price'])
+                        # Fetch all prices in ONE request (weight=1 vs 3)
+                        try:
+                            tickers = (
+                                binance_client.client
+                                .futures_symbol_ticker()
+                            )
+                            ticker_map = {
+                                t['symbol']: float(t['price'])
+                                for t in tickers
+                            }
+                            for symbol in symbols:
+                                if symbol in ticker_map:
+                                    binance_client.demo_account.update_price(
+                                        symbol, ticker_map[symbol]
+                                    )
+                        except Exception as e:
+                            logger.debug(f"Price fetch error: {e}")
 
-                                # Update demo account with REAL price
-                                binance_client.demo_account.update_price(
-                                    symbol, real_price
-                                )
-                            except Exception as e:
-                                logger.debug(
-                                    f"Error fetching price for "
-                                    f"{symbol}: {e}"
-                                )
-
-                    time.sleep(2)  # Update every 2 seconds
+                    time.sleep(15)  # 15s interval - safe for rate limits
                 except Exception as e:
                     logger.debug(f"Price fetcher error: {e}")
 
