@@ -62,7 +62,12 @@
         .market-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
         .market-symbol { font-size: 1.3em; font-weight: bold; }
         .market-logo { font-size: 1.8em; }
-        .market-price { font-size: 2em; font-weight: bold; margin: 8px 0; }
+        .market-price { font-size: 2em; font-weight: bold; margin: 8px 0; transition: color 0.15s ease; font-variant-numeric: tabular-nums; }
+        .market-price.flash-up { color: #4ade80 !important; text-shadow: 0 0 8px rgba(74,222,128,0.5); }
+        .market-price.flash-down { color: #f87171 !important; text-shadow: 0 0 8px rgba(248,113,113,0.5); }
+        .ws-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-left: 6px; vertical-align: middle; }
+        .ws-dot.connected { background: #4ade80; box-shadow: 0 0 4px #4ade80; }
+        .ws-dot.disconnected { background: #f87171; }
         .market-change { display: inline-block; padding: 4px 10px; border-radius: 15px; font-weight: bold; }
         .market-change.positive { background: rgba(40, 167, 69, 0.3); color: #4ade80; }
         .market-change.negative { background: rgba(220, 53, 69, 0.3); color: #f87171; }
@@ -306,7 +311,7 @@
         
         <!-- REAL-TIME MARKET DATA -->
         <div class="card">
-            <h3>📊 Real-time Market Data</h3>
+            <h3>📊 Real-time Market Data <span id="ws-status" class="ws-dot disconnected" title="WebSocket"></span></h3>
             <div class="market-grid">
                 <!-- BTC -->
                 <div class="market-card btc">
@@ -647,6 +652,79 @@
             
             if (data.candles && data.candles.length > 0) drawMiniChart(symbol, data.candles);
         }
+        
+        // ==================== BINANCE WEBSOCKET (REAL-TIME PRICES) ====================
+        const wsSymbolMap = {'btcusdt': 'btc', 'ethusdt': 'eth', 'solusdt': 'sol'};
+        const wsPrecision = {'btc': 2, 'eth': 2, 'sol': 2};
+        let binanceWs = null;
+        let wsReconnectTimer = null;
+
+        function connectBinanceWs() {
+            if (binanceWs && binanceWs.readyState <= 1) return; // already open/connecting
+            const streams = 'btcusdt@aggTrade/ethusdt@aggTrade/solusdt@aggTrade';
+            const url = 'wss://fstream.binance.com/stream?streams=' + streams;
+            try {
+                binanceWs = new WebSocket(url);
+            } catch(e) { console.error('WS create error', e); return; }
+
+            binanceWs.onopen = function() {
+                const dot = document.getElementById('ws-status');
+                if (dot) { dot.className = 'ws-dot connected'; dot.title = 'WebSocket connected'; }
+                if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
+            };
+
+            binanceWs.onmessage = function(evt) {
+                try {
+                    const msg = JSON.parse(evt.data);
+                    const d = msg.data;
+                    if (!d || !d.s) return;
+                    const sym = wsSymbolMap[d.s.toLowerCase()];
+                    if (!sym) return;
+                    const price = parseFloat(d.p);
+                    if (!price || price <= 0) return;
+                    updateWsPrice(sym, price);
+                } catch(e) {}
+            };
+
+            binanceWs.onclose = function() {
+                const dot = document.getElementById('ws-status');
+                if (dot) { dot.className = 'ws-dot disconnected'; dot.title = 'WebSocket disconnected'; }
+                scheduleWsReconnect();
+            };
+
+            binanceWs.onerror = function() {
+                try { binanceWs.close(); } catch(e) {}
+            };
+        }
+
+        function scheduleWsReconnect() {
+            if (wsReconnectTimer) return;
+            wsReconnectTimer = setTimeout(function() {
+                wsReconnectTimer = null;
+                connectBinanceWs();
+            }, 3000);
+        }
+
+        function updateWsPrice(symbol, price) {
+            const el = document.getElementById(symbol + '-price');
+            if (!el) return;
+            const prec = wsPrecision[symbol] || 2;
+            const formatted = '$' + price.toLocaleString('en-US', {minimumFractionDigits: prec, maximumFractionDigits: prec});
+            const oldText = el.textContent;
+            if (formatted === oldText) return; // same price, skip
+
+            el.textContent = formatted;
+            // Flash green/red
+            const oldNum = parseFloat(oldText.replace(/[^0-9.]/g, '')) || 0;
+            el.classList.remove('flash-up', 'flash-down');
+            void el.offsetWidth; // force reflow for re-triggering
+            el.classList.add(price > oldNum ? 'flash-up' : 'flash-down');
+            // Remove flash after 300ms
+            setTimeout(function() { el.classList.remove('flash-up', 'flash-down'); }, 300);
+        }
+
+        // Start WebSocket immediately
+        connectBinanceWs();
         
         // ==================== AI ANALYSIS ====================
         function updateBotAnalysis() {
@@ -1042,7 +1120,7 @@
         }
         
         // ==================== AUTO REFRESH ====================
-        setInterval(updateMarketData, 15000);      // 15s – klines ko thay đổi nhanh
+        setInterval(updateMarketData, 60000);      // 60s – 24h stats & candles only (prices via WebSocket)
         setInterval(updateBotAnalysis, 30000);      // 30s – AI analysis
         setInterval(updateAccountOverview, 30000);  // 30s – balance
         setInterval(updatePositionsTable, 10000);   // 10s – positions
