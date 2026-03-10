@@ -539,7 +539,7 @@ def get_trading_mode():
 @app.route('/api/market_data')
 def get_market_data():
     """Get real-time market data for BTC, ETH, SOL"""
-    cached = _cache_get('market_data', 15)
+    cached = _cache_get('market_data', 30)
     if cached:
         return jsonify(cached)
     try:
