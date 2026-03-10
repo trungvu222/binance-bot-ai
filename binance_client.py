@@ -43,26 +43,34 @@ class BinanceFuturesClient:
             testnet=self.config["trading"]["testnet"]
         )
         
-        # Sync time with Binance server to avoid -1021 errors  
+        # Sync time with Binance server to avoid -1021 errors
         import time as time_module
         import requests
+        self.time_offset = -1500  # safe default
         try:
-            # Use public endpoint (no auth required)
-            base_url = "https://testnet.binancefuture.com" if self.config["trading"]["testnet"] else "https://fapi.binance.com"
-            response = requests.get(f"{base_url}/fapi/v1/time", timeout=5)
-            server_time = response.json()['serverTime']
-            local_time = int(time_module.time() * 1000)
-            self.time_offset = server_time - local_time
-            
-            logger.warning(f"Time sync: offset calculated as {self.time_offset}ms")
-            
-            # Store offset for later use with recvWindow
-            self.client.timestamp_offset = self.time_offset
-            
+            base_url = (
+                "https://testnet.binancefuture.com"
+                if self.config["trading"]["testnet"]
+                else "https://fapi.binance.com"
+            )
+            response = requests.get(
+                f"{base_url}/fapi/v1/time", timeout=5
+            )
+            data = response.json()
+            if 'serverTime' in data:
+                local_time = int(time_module.time() * 1000)
+                self.time_offset = data['serverTime'] - local_time
+                logger.warning(
+                    f"Time sync: offset={self.time_offset}ms"
+                )
+            else:
+                # Rate limited or error response — don't raise
+                logger.warning(
+                    f"Time sync skipped: {data.get('msg', data)}"
+                )
         except Exception as e:
-            logger.error(f"Could not sync time: {e}")
-            self.time_offset = -1500
-            self.client.timestamp_offset = self.time_offset
+            logger.warning(f"Time sync failed (using default): {e}")
+        self.client.timestamp_offset = self.time_offset
         
         # Async client for real-time operations
         self.async_client = None
