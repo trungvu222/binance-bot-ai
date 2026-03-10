@@ -1,0 +1,31 @@
+{
+  "performance_log": {
+    "BTCUSDT": {
+      "recent_accuracy": 38.333333333333336,
+      "train_accuracy": 100.0,
+      "trained_at": "2026-03-06T14:40:28.621977",
+      "trades_since_last_train": 0,
+      "lookback_days": 5.208333333333333
+    },
+    "ETHUSDT": {
+      "recent_accuracy": 40.666666666666664,
+      "train_accuracy": 100.0,
+      "trained_at": "2026-03-06T14:40:34.429449",
+      "trades_since_last_train": 0,
+      "lookback_days": 5.208333333333333
+    },
+    "SOLUSDT": {
+      "recent_accuracy": 44.666666666666664,
+      "train_accuracy": 88.0,
+      "trained_at": "2026-03-06T17:56:33.809415",
+      "trades_since_last_train": 0,
+      "lookback_days": 5.208333333333333
+    }
+  },
+  "last_train_time": {
+    "BTCUSDT": "2026-03-06T14:40:28.621973",
+    "ETHUSDT": "2026-03-06T14:40:34.429447",
+    "SOLUSDT": "2026-03-06T17:56:33.809412"
+  },
+  "updated_at": "2026-03-06T17:56:33.809441"
+}
