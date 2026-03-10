@@ -24,9 +24,11 @@ from binance_client import BinanceFuturesClient
 from smart_bot_engine import SmartBotEngine
 
 app = Flask(__name__)
-app.secret_key = os.environ.get(
-    "FLASK_SECRET_KEY", "binance_bot_dashboard_2025"
-)
+_flask_secret = os.environ.get("FLASK_SECRET_KEY")
+if not _flask_secret:
+    import secrets as _secrets
+    _flask_secret = _secrets.token_hex(32)
+app.secret_key = _flask_secret
 
 # Global bot instance
 bot_instance = None
@@ -380,15 +382,26 @@ except Exception as e:
     binance_client = None
 
 
+_client_last_retry: float = 0.0
+_CLIENT_RETRY_COOLDOWN = 120.0  # seconds - avoid hammering Binance when banned
+
+
 def _get_client():
-    """Trả về binance_client, tự reinit nếu None."""
-    global binance_client
+    """Return binance_client, reinit only after cooldown to avoid ban loop."""
+    global binance_client, _client_last_retry
     if binance_client is None:
-        try:
-            binance_client = BinanceFuturesClient()
-            logger.info("Binance client re-initialized successfully")
-        except Exception as e:
-            logger.error(f"Client reinit failed: {e}")
+        import time as _t
+        now = _t.time()
+        if now - _client_last_retry >= _CLIENT_RETRY_COOLDOWN:
+            _client_last_retry = now
+            try:
+                binance_client = BinanceFuturesClient()
+                logger.info("Binance client re-initialized successfully")
+            except Exception as e:
+                logger.error(f"Client reinit failed: {e}")
+        else:
+            remaining = int(_CLIENT_RETRY_COOLDOWN - (now - _client_last_retry))
+            logger.debug(f"Client reinit cooldown: {remaining}s remaining")
     return binance_client
 
 
