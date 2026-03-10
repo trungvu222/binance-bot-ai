@@ -1879,6 +1879,17 @@ def test_page():
     })
 
 
+@app.route('/api/myip')
+def get_my_ip():
+    """Temporary: get server outbound IP for Binance whitelist"""
+    try:
+        import requests as _req
+        ip = _req.get('https://ifconfig.me', timeout=5).text.strip()
+        return jsonify({'server_ip': ip})
+    except Exception as e:
+        return jsonify({'error': str(e)})
+
+
 @app.route('/api/status')
 def get_status():
     """Get bot status"""
