@@ -44,15 +44,16 @@ EXPOSE 8080
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-    CMD curl -f http://localhost:8080/api/status || exit 1
+    CMD curl -f http://localhost:${PORT:-8080}/api/status || exit 1
 
 # Start with gunicorn (production WSGI server)
 # Single worker because the bot uses threading + asyncio internally
-CMD ["gunicorn", \
-     "--bind", "0.0.0.0:8080", \
-     "--workers", "1", \
-     "--timeout", "120", \
-     "--keep-alive", "5", \
-     "--access-logfile", "-", \
-     "--error-logfile", "-", \
-     "web_dashboard:app"]
+# Render sets $PORT dynamically — must use shell form to expand it
+CMD gunicorn \
+    --bind "0.0.0.0:${PORT:-8080}" \
+    --workers 1 \
+    --timeout 120 \
+    --keep-alive 5 \
+    --access-logfile - \
+    --error-logfile - \
+    web_dashboard:app
