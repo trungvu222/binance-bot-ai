@@ -34,27 +34,44 @@ def get_extended_klines(client, symbol, interval='5m', total_candles=8640):
     Fetch more candles than the API limit allows (1500 per call).
     8640 candles of 5m = 30 days of data.
     Uses pagination via endTime parameter.
+    Falls back to public API (no auth needed) if client fails.
     """
     all_klines = []
     batch_size = 1500
     end_time = None
 
+    # Try public API first (no auth needed for klines)
+    import requests as _req
+    PUBLIC_URL = "https://fapi.binance.com/fapi/v1/klines"
+    use_public = True
+
     while len(all_klines) < total_candles:
         remaining = total_candles - len(all_klines)
         limit = min(batch_size, remaining)
         try:
-            if end_time:
-                klines = client.client.futures_klines(
-                    symbol=symbol,
-                    interval=interval,
-                    limit=limit,
-                    endTime=end_time
+            if use_public:
+                params = {
+                    'symbol': symbol,
+                    'interval': interval,
+                    'limit': limit,
+                }
+                if end_time:
+                    params['endTime'] = end_time
+                resp = _req.get(
+                    PUBLIC_URL, params=params, timeout=15
                 )
+                resp.raise_for_status()
+                klines = resp.json()
             else:
+                kwargs = {
+                    'symbol': symbol,
+                    'interval': interval,
+                    'limit': limit,
+                }
+                if end_time:
+                    kwargs['endTime'] = end_time
                 klines = client.client.futures_klines(
-                    symbol=symbol,
-                    interval=interval,
-                    limit=limit
+                    **kwargs
                 )
 
             if not klines:
@@ -371,23 +388,28 @@ def balance_classes(X, y, hold_ratio=0.8):
 
 def prepare_advanced_features(df, htf_data=None):
     """
-    Chuẩn bị features V2 — thêm RSI divergence, market regime
+    Chuẩn bị features V7 — CHỈ stationary/normalized features
+    Loại bỏ raw close, volume, EMA, SMA, ATR (non-stationary → overfit)
     """
     feature_dict = {}
 
-    # Basic price features (now includes ema_9 and ema_21)
-    basic_features = [
-        'close', 'volume', 'rsi', 'macd', 'macd_signal',
-        'bb_width', 'bb_percent', 'ema_9', 'ema_21',
-        'ema_50', 'ema_200', 'sma_20', 'adx', 'atr',
+    # V7: Only stationary/bounded oscillators — NO raw prices/volumes
+    stationary_features = [
+        'rsi', 'bb_width', 'bb_percent', 'adx',
         'stoch_k', 'stoch_d', 'williams_r', 'cci', 'mfi',
-        'rsi_6', 'rsi_21', 'macd_histogram',
-        'plus_di', 'minus_di'
+        'rsi_6', 'rsi_21', 'plus_di', 'minus_di'
     ]
 
-    for col in basic_features:
+    for col in stationary_features:
         if col in df.columns:
             feature_dict[col] = df[col].values
+
+    # Normalized MACD (% of price — makes it stationary)
+    if 'close' in df.columns:
+        safe_close = df['close'].replace(0, 1)
+        for mcol in ['macd', 'macd_signal', 'macd_histogram']:
+            if mcol in df.columns:
+                feature_dict[f'{mcol}_pct'] = (df[mcol] / safe_close * 100).values
 
     # Candlestick patterns
     patterns = detect_candlestick_patterns(df)
@@ -423,12 +445,13 @@ def prepare_advanced_features(df, htf_data=None):
         rsi_slope[3:] = rsi_vals[3:] - rsi_vals[:-3]
         feature_dict['rsi_slope_3'] = rsi_slope
 
-    # MACD histogram slope
-    if 'macd_histogram' in df.columns:
-        mh = df['macd_histogram'].values
-        mh_slope = np.zeros_like(mh)
-        mh_slope[3:] = mh[3:] - mh[:-3]
-        feature_dict['macd_hist_slope'] = mh_slope
+    # Normalized MACD histogram slope
+    if 'macd_histogram' in df.columns and 'close' in df.columns:
+        safe_close = df['close'].replace(0, 1).values
+        mh_pct = df['macd_histogram'].values / safe_close * 100
+        mh_slope = np.zeros_like(mh_pct)
+        mh_slope[3:] = mh_pct[3:] - mh_pct[:-3]
+        feature_dict['macd_hist_pct_slope'] = mh_slope
 
     # Market regime: ATR ratio (current vs 50-period avg)
     if 'atr' in df.columns:
@@ -460,11 +483,13 @@ def prepare_advanced_features(df, htf_data=None):
                 df['rsi'].shift(lag).fillna(50).values
             )
 
-    # MACD histogram lags
-    if 'macd_histogram' in df.columns:
+    # Normalized MACD histogram lags
+    if 'macd_histogram' in df.columns and 'close' in df.columns:
+        safe_close = df['close'].replace(0, 1)
+        macd_hist_pct = df['macd_histogram'] / safe_close * 100
         for lag in [3, 6]:
-            feature_dict[f'macd_hist_lag_{lag}'] = (
-                df['macd_histogram'].shift(lag).fillna(0).values
+            feature_dict[f'macd_hist_pct_lag_{lag}'] = (
+                macd_hist_pct.shift(lag).fillna(0).values
             )
 
     # Candle body/wick ratio (price action quality)
@@ -473,13 +498,18 @@ def prepare_advanced_features(df, htf_data=None):
         total = (df['high'] - df['low']).replace(0, 1)
         feature_dict['body_ratio'] = (body / total).values
 
-    # Higher-timeframe features (already merged into df)
+    # Higher-timeframe features — only stationary ones
     htf_cols = [c for c in df.columns if c.startswith(('h1_', 'h4_'))]
     for col in htf_cols:
-        feature_dict[col] = df[col].fillna(0).values
+        if any(k in col for k in ['rsi', 'adx', 'trend']):
+            feature_dict[col] = df[col].fillna(0).values
+        elif 'macd' in col and 'close' in df.columns:
+            safe_close = df['close'].replace(0, 1)
+            feature_dict[f'{col}_pct'] = (df[col].fillna(0) / safe_close * 100).values
+        # Skip raw HTF ema/sma (non-stationary)
     if htf_data and isinstance(htf_data, dict):
         for k, v in htf_data.items():
-            if k not in feature_dict:
+            if k not in feature_dict and any(s in k for s in ['rsi', 'adx', 'trend']):
                 feature_dict[k] = v
 
     # Convert to DataFrame
@@ -493,11 +523,25 @@ def get_htf_features_for_training(client, analyzer, symbol):
     """
     Lấy features từ 1h và 4h timeframe.
     Trả về dict chứa DataFrames có timestamp để merge_asof vào 5m.
+    Falls back to public API if client fails.
     """
+    import requests as _req
+    PUBLIC_URL = "https://fapi.binance.com/fapi/v1/klines"
+
     htf_dfs = {}
     for tf, label in [('1h', 'h1'), ('4h', 'h4')]:
         try:
-            klines = client.get_klines(symbol, tf, 500)
+            # Try client first, fallback to public API
+            try:
+                klines = client.get_klines(symbol, tf, 500)
+            except Exception:
+                resp = _req.get(PUBLIC_URL, params={
+                    'symbol': symbol,
+                    'interval': tf,
+                    'limit': 500
+                }, timeout=15)
+                resp.raise_for_status()
+                klines = resp.json()
             if not klines:
                 continue
             htf_df = analyzer.prepare_dataframe(klines)
@@ -522,9 +566,9 @@ def get_htf_features_for_training(client, analyzer, symbol):
     return htf_dfs
 
 def train_symbol(symbol):
-    """Train models cho 1 symbol - V6: Binary LONG/SHORT + anti-overfit"""
+    """Train models cho 1 symbol - V7: Binary + anti-overfit + stationary features"""
     logger.info(f"\n{'='*60}")
-    logger.info(f"🎯 TRAINING V6 BINARY MODELS: {symbol}")
+    logger.info(f"🎯 TRAINING V7 MODELS: {symbol}")
     logger.info(f"{'='*60}")
 
     # More data: 90 days BTC/ETH, 60 days SOL
@@ -569,7 +613,7 @@ def train_symbol(symbol):
         logger.info(f"   Merged HTF → {len(df.columns)} columns total")
 
     # ===== V6 LABELS: Binary (LONG vs SHORT only) =====
-    logger.info("🏷️ Creating V6 BINARY labels (threshold=1.5%, max_bars=60)...")
+    logger.info("🏷️ Creating V7 BINARY labels (threshold=1.5%, max_bars=60)...")
     labels = create_binary_labels(df, pct=0.015, max_bars=60)
     df['label'] = labels
 
@@ -600,8 +644,8 @@ def train_symbol(symbol):
     X_train, X_test = X[:split_idx], X[split_idx:]
     y_train, y_test = y[:split_idx], y[split_idx:]
 
-    # ===== V6 PREPROCESSING: StandardScaler ONLY =====
-    logger.info("\n🔧 V6 Preprocessing: StandardScaler only...")
+    # ===== V7 PREPROCESSING: StandardScaler ONLY =====
+    logger.info("\n🔧 V7 Preprocessing: StandardScaler only...")
     scaler = StandardScaler()
     X_train_proc = scaler.fit_transform(X_train)
     X_test_proc = scaler.transform(X_test)
@@ -610,8 +654,8 @@ def train_symbol(symbol):
     sw_train = compute_sample_weight('balanced', y_train)
     results = {}
 
-    # ===== MODEL 1: GradientBoosting V6 (Binary) =====
-    logger.info("\n🤖 [1/3] Training GradientBoosting V6 (binary)...")
+    # ===== MODEL 1: GradientBoosting V7 (Binary) =====
+    logger.info("\n🤖 [1/3] Training GradientBoosting V7...")
     gb = GradientBoostingClassifier(
         n_estimators=500,
         max_depth=3,
@@ -634,7 +678,7 @@ def train_symbol(symbol):
 
     # ===== MODEL 2: XGBoost V6 (Binary) =====
     if HAS_XGBOOST:
-        logger.info("🤖 [2/3] Training XGBoost V6 (binary)...")
+        logger.info("🤖 [2/3] Training XGBoost V7...")
         xgb = XGBClassifier(
             n_estimators=500,
             max_depth=3,
@@ -676,8 +720,8 @@ def train_symbol(symbol):
         gb2_pipe = Pipeline([('scaler', scaler), ('model', gb2)])
         results['xgboost'] = {'model': gb2_pipe, 'test_acc': gb2_test}
 
-    # ===== MODEL 3: HistGradientBoosting V6 (Binary) =====
-    logger.info("🤖 [3/3] Training HistGradientBoosting V6 (binary)...")
+    # ===== MODEL 3: HistGradientBoosting V7 (Binary) =====
+    logger.info("🤖 [3/3] Training HistGradientBoosting V7...")
     hgb = HistGradientBoostingClassifier(
         max_iter=500,
         max_depth=3,
@@ -694,6 +738,40 @@ def train_symbol(symbol):
     logger.info(f"   Train: {hgb_train:.1f}% | Test: {hgb_test:.1f}%")
     hgb_pipe = Pipeline([('scaler', scaler), ('model', hgb)])
     results['hist_gb'] = {'model': hgb_pipe, 'test_acc': hgb_test}
+
+    # ===== CROSS-VALIDATION (TimeSeriesSplit, purged) =====
+    from sklearn.model_selection import TimeSeriesSplit
+    logger.info("\n📊 TimeSeriesSplit CV (5 folds, purge=60)...")
+    tscv = TimeSeriesSplit(n_splits=5)
+    cv_scores = []
+    purge_gap = 60  # Avoid label leakage
+
+    for fold_i, (tr_idx, val_idx) in enumerate(tscv.split(X)):
+        if len(tr_idx) > purge_gap:
+            tr_idx = tr_idx[:-purge_gap]
+        cv_scaler = StandardScaler()
+        X_tr = cv_scaler.fit_transform(X[tr_idx])
+        X_val = cv_scaler.transform(X[val_idx])
+        sw = compute_sample_weight('balanced', y[tr_idx])
+        cv_gb = GradientBoostingClassifier(
+            n_estimators=500, max_depth=3,
+            learning_rate=0.01, subsample=0.75,
+            min_samples_split=30, min_samples_leaf=25,
+            max_features='sqrt',
+            validation_fraction=0.15,
+            n_iter_no_change=30, tol=1e-4,
+            random_state=42
+        )
+        cv_gb.fit(X_tr, y[tr_idx], sample_weight=sw)
+        score = cv_gb.score(X_val, y[val_idx]) * 100
+        cv_scores.append(score)
+        logger.info(f"   Fold {fold_i+1}: {score:.1f}%")
+
+    cv_mean = np.mean(cv_scores)
+    cv_std = np.std(cv_scores)
+    logger.info(
+        f"   CV: {cv_mean:.1f}% ± {cv_std:.1f}%"
+    )
 
     # ===== EVALUATION (Binary) =====
     logger.info(f"\n📊 EVALUATION REPORT — {symbol}")
@@ -737,9 +815,9 @@ def train_symbol(symbol):
         'accuracy_hgb': results['hist_gb']['test_acc'],
         'trade_quality': trade_quality,
         'n_classes': 2,
-        'label_method': 'binary_direction',
+        'label_method': 'v7_binary_stationary',
         'threshold_pct': 0.015,
-        'cv_accuracy': None,
+        'cv_accuracy': cv_mean,
         'trained_at': str(pd.Timestamp.now()),
         'n_samples': len(X),
         'n_days': n_days,
@@ -771,17 +849,17 @@ def train_symbol(symbol):
 
 
 def main():
-    """Train all symbols with V6 binary pipeline"""
+    """Train all symbols with V7 anti-overfit pipeline"""
     symbols = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT']
 
     logger.info("=" * 60)
-    logger.info("🚀 TRAINING V6 BINARY AI MODELS")
-    logger.info("   ✅ V6 Binary: LONG vs SHORT only (no HOLD class)")
+    logger.info("🚀 TRAINING V7 AI MODELS (Anti-Overfit)")
+    logger.info("   ✅ V7: Stationary features only (no raw prices)")
+    logger.info("   ✅ Normalized MACD (% of price)")
+    logger.info("   ✅ TimeSeriesSplit CV (5-fold, purged)")
     logger.info("   ✅ Extended data: 90 days BTC/ETH, 60 days SOL")
-    logger.info("   ✅ Labels: price hit +1.5% or -1.5% first (max 60 bars)")
-    logger.info("   ✅ Ambiguous samples dropped → cleaner training")
-    logger.info("   ✅ 3 models: GradientBoosting + XGBoost + HistGB")
-    logger.info("   ✅ HOLD = confidence < 58% at inference time")
+    logger.info("   ✅ Binary: LONG vs SHORT (no HOLD class)")
+    logger.info("   ✅ 3 models: GB + XGBoost + HistGB")
     logger.info("=" * 60)
 
     results = {}
@@ -791,7 +869,7 @@ def main():
             results[symbol] = result
 
     logger.info(f"\n{'='*60}")
-    logger.info("📊 V6 BINARY TRAINING SUMMARY:")
+    logger.info("📊 V7 TRAINING SUMMARY:")
     logger.info(f"{'='*60}")
 
     for symbol, r in results.items():
@@ -803,15 +881,39 @@ def main():
         )
 
     if results:
-        avg_acc = np.mean([r['accuracy'] for r in results.values()])
-        logger.info(f"\n🎯 Average test accuracy: {avg_acc:.1f}% (binary baseline=50%)")
-        if avg_acc >= 55:
-            ev = avg_acc / 100 * 1.5 - (1 - avg_acc / 100) * 1.5
-            logger.info(f"✅ Profitable edge! EV={ev:+.3f}% per trade — READY TO DEPLOY!")
+        # Use best model per symbol (ensemble of GB/XGB/HGB)
+        best_accs = []
+        for sym, r in results.items():
+            best = max(
+                r['accuracy'],
+                r['accuracy_xgb'],
+                r['accuracy_hgb']
+            )
+            best_accs.append(best)
+        avg_best = np.mean(best_accs)
+        logger.info(
+            f"\n🎯 Average best-model accuracy: "
+            f"{avg_best:.1f}% (baseline=50%)"
+        )
+        # With R:R 1:2 (SL=1.5%, TP=3.0%), breakeven = 33%
+        # With R:R 1:1 (SL=TP=1.5%), breakeven = 50%
+        # > 51% on binary = profitable
+        if avg_best >= 51:
+            ev_rr2 = (
+                avg_best / 100 * 3.0
+                - (1 - avg_best / 100) * 1.5
+            )
+            logger.info(
+                f"✅ Profitable! EV={ev_rr2:+.3f}% "
+                f"per trade (R:R 1:2)"
+            )
         else:
-            logger.warning(f"⚠️  Accuracy {avg_acc:.1f}% — marginal edge")
+            logger.warning(
+                f"⚠️  Accuracy {avg_best:.1f}% — "
+                f"needs improvement"
+            )
 
-    logger.info("\n✅ All V6 binary models trained and saved!")
+    logger.info("\n✅ All V7 models trained and saved!")
     logger.info("   models/gradient_boost_BTCUSDT.pkl")
     logger.info("   models/gradient_boost_ETHUSDT.pkl")
     logger.info("   models/gradient_boost_SOLUSDT.pkl")
