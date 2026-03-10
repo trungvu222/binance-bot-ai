@@ -385,7 +385,9 @@ _ban_until: float = 0.0  # epoch (s) khi ban hết hạn
 
 def _get_client():
     """Lazy init: tạo client lần đầu hoặc retry sau cooldown.
-    Parse ban expiry để không retry vô ích trong lúc bị ban."""
+    Parse ban expiry để không retry vô ích trong lúc bị ban.
+    BinanceFuturesClient(ping=False) chỉ gọi 1 API (time sync).
+    """
     global binance_client, _client_last_retry, _ban_until
     if binance_client is not None:
         return binance_client
@@ -397,20 +399,8 @@ def _get_client():
     if now - _client_last_retry < _CLIENT_RETRY_COOLDOWN:
         return None  # vẫn trong cooldown, không thử lại
     _client_last_retry = now
-    # Pre-check nhẹ: gọi /fapi/v1/time (weight=1, không cần auth)
-    # Nếu vẫn ban thì không tạo Client() (tránh thêm ping call)
-    try:
-        import requests as _req
-        r = _req.get(
-            "https://fapi.binance.com/fapi/v1/time", timeout=5
-        )
-        data = r.json()
-        if 'code' in data and data['code'] == -1003:
-            _parse_ban_until(data.get('msg', ''))
-            logger.error("IP still banned, retry after ban expires")
-            return None
-    except Exception:
-        pass  # Network error → sẽ fail ở Client() bên dưới
+    # Không cần pre-check nữa vì BinanceFuturesClient(ping=False)
+    # chỉ gọi 1 call /fapi/v1/time (weight=1) và tự raise nếu ban
     try:
         binance_client = BinanceFuturesClient()
         logger.info("Binance client initialized OK!")
