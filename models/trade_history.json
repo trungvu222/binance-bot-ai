@@ -1,0 +1,11 @@
+[
+  {
+    "symbol": "SOLUSDT",
+    "signal": "LONG",
+    "entry_price": 88.61527530952,
+    "exit_price": 87.7,
+    "profit_pct": -1.0328640365028237,
+    "success": false,
+    "timestamp": "2026-03-06T17:56:32.122725"
+  }
+]
