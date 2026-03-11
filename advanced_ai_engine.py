@@ -31,32 +31,9 @@ except ImportError:
     HAS_XGBOOST = False
     logger.warning("XGBoost not available, using RandomForest instead")
 
-# Try to import TensorFlow/Keras for LSTM
-# Support both standalone Keras 3.x and legacy tensorflow.keras
-try:
-    import tensorflow as tf
-    try:
-        # Keras 3.x standalone (preferred)
-        from keras.models import Sequential
-        from keras.layers import LSTM, Dense, Dropout, BatchNormalization, Bidirectional
-        from keras.optimizers import Adam
-        from keras.callbacks import EarlyStopping, ReduceLROnPlateau
-        from keras.models import load_model
-        from keras import regularizers
-    except ImportError:
-        # Fallback to tensorflow.keras (TF 2.x)
-        from tensorflow.keras.models import Sequential, load_model
-        from tensorflow.keras.layers import LSTM, Dense, Dropout, BatchNormalization, Bidirectional
-        from tensorflow.keras.optimizers import Adam
-        from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
-        from tensorflow.keras import regularizers
-    HAS_TENSORFLOW = True
-    # Suppress TF warnings
-    tf.get_logger().setLevel('ERROR')
-    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-except ImportError:
-    HAS_TENSORFLOW = False
-    logger.warning("TensorFlow not available, LSTM will be disabled")
+# TensorFlow/LSTM disabled — bot uses GradientBoosting ensemble (V7)
+# Importing TF on servers without it causes 15-20s startup delay
+HAS_TENSORFLOW = False
 
 
 class AdvancedCandlestickPatterns:
