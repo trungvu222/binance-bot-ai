@@ -2828,19 +2828,102 @@ def api_retrain_status():
 
 
 # ──────────────────── PWA Endpoints ────────────────────────────────────────
-def _make_solid_png(size):
-    """Generate a flat-color PNG icon using only built-in modules (no PIL needed)."""
-    r, g, b = 102, 126, 234  # #667eea — app brand colour
-    row = bytes([r, g, b] * size)
-    raw = b''.join(b'\x00' + row for _ in range(size))
+def _make_trading_icon_png(size):
+    """Trading bot icon: dark gradient bg + 4 candlestick bars + trend line.
+    Uses only Python stdlib (struct, zlib) — no PIL needed.
+    """
+    buf = bytearray(size * size * 3)
+
+    # Fast gradient background — one Python iter per row
+    for y in range(size):
+        t = y / max(size - 1, 1)
+        # Dark navy (#0f1923) → dark blue (#1a3050)
+        pixel = bytes([int(15 + 11*t), int(25 + 27*t), int(35 + 45*t)])
+        s_off = y * size * 3
+        buf[s_off:s_off + size * 3] = pixel * size
+
+    sc = size / 192.0  # scale factor for any size
+
+    def rect(x0, y0, x1, y1, r, g, b):
+        """Fill axis-aligned rectangle, clamped to image bounds."""
+        x0c, x1c = max(0, x0), min(size, x1)
+        if x1c <= x0c:
+            return
+        row_pix = bytes([r, g, b]) * (x1c - x0c)
+        for yy in range(max(0, y0), min(size, y1)):
+            start = (yy * size + x0c) * 3
+            buf[start:start + len(row_pix)] = row_pix
+
+    # Chart area: centred, 70% of icon
+    cl = int(28 * sc)
+    cr_ = int(164 * sc)
+    ct = int(36 * sc)
+    cb_ = int(156 * sc)
+    cw = cr_ - cl
+    ch = cb_ - ct
+
+    # 4 candles: (body_top%, body_bot%, is_green)
+    # Arranged to suggest upward trend: down-up-down-up
+    candles = [
+        (0.32, 0.68, False),   # 1st — red, medium
+        (0.10, 0.74, True),    # 2nd — green, tall
+        (0.40, 0.72, False),   # 3rd — red, small
+        (0.04, 0.84, True),    # 4th — green, tallest
+    ]
+    bw = max(4, int(cw / 7.8))           # bar body width
+    bg_ = max(2, int(bw * 0.55))         # gap between bars
+    total_bw = len(candles) * bw + (len(candles) - 1) * bg_
+    bx0 = cl + (cw - total_bw) // 2
+    wh = max(1, int(sc * 1.6))           # wick half-width
+
+    trend_pts = []
+    for i, (tp, bp, green) in enumerate(candles):
+        bx = bx0 + i * (bw + bg_)
+        by_t = ct + int(tp * ch)
+        by_b = ct + int(bp * ch)
+        col = (34, 211, 84) if green else (225, 55, 55)
+        wx = bx + bw // 2
+        # wick (extends above/below body)
+        rect(wx - wh, by_t - int(9*sc), wx + wh + 1, by_b + int(7*sc), *col)
+        # body
+        rect(bx, by_t, bx + bw, by_b, *col)
+        trend_pts.append((wx, by_t))    # top of body for trend line
+
+    # Diagonal trend line connecting candle tops (upward left→right)
+    lw = max(2, int(3.5 * sc))
+    gold = (255, 215, 0)
+    for i in range(len(trend_pts) - 1):
+        ax, ay = trend_pts[i]
+        bxp, byp = trend_pts[i + 1]
+        steps = max(abs(bxp - ax), abs(byp - ay), 1)
+        for step in range(steps + 1):
+            lx = int(ax + (bxp - ax) * step / steps)
+            ly = int(ay + (byp - ay) * step / steps)
+            rect(lx - lw, ly - lw, lx + lw + 1, ly + lw + 1, *gold)
+
+    # Small arrowhead at the end of trend line (→ up)
+    ex, ey = trend_pts[-1]
+    asz = max(4, int(10 * sc))
+    for k in range(asz):
+        rect(ex - k, ey - asz + k, ex + k + 1, ey - asz + k + 1, *gold)
+
+    # Pack pixels → PNG
+    raw = b''.join(
+        b'\x00' + bytes(buf[y * size * 3:(y + 1) * size * 3])
+        for y in range(size)
+    )
     idat = zlib.compress(raw, 6)
 
-    def chunk(t, d):
-        c = t + d
-        return struct.pack('>I', len(d)) + c + struct.pack('>I', zlib.crc32(c) & 0xffffffff)
+    def _ck(tag, data):
+        c = tag + data
+        return (struct.pack('>I', len(data)) + c
+                + struct.pack('>I', zlib.crc32(c) & 0xffffffff))
 
     ihdr = struct.pack('>IIBBBBB', size, size, 8, 2, 0, 0, 0)
-    return b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', ihdr) + chunk(b'IDAT', idat) + chunk(b'IEND', b'')
+    return (b'\x89PNG\r\n\x1a\n'
+            + _ck(b'IHDR', ihdr)
+            + _ck(b'IDAT', idat)
+            + _ck(b'IEND', b''))
 
 
 _pwa_icon_192 = None
@@ -2871,7 +2954,7 @@ def pwa_manifest():
 def pwa_icon_192():
     global _pwa_icon_192
     if _pwa_icon_192 is None:
-        _pwa_icon_192 = _make_solid_png(192)
+        _pwa_icon_192 = _make_trading_icon_png(192)
     return Response(_pwa_icon_192, mimetype='image/png',
                     headers={'Cache-Control': 'public, max-age=86400'})
 
@@ -2880,7 +2963,7 @@ def pwa_icon_192():
 def pwa_icon_512():
     global _pwa_icon_512
     if _pwa_icon_512 is None:
-        _pwa_icon_512 = _make_solid_png(512)
+        _pwa_icon_512 = _make_trading_icon_png(512)
     return Response(_pwa_icon_512, mimetype='image/png',
                     headers={'Cache-Control': 'public, max-age=86400'})
 
