@@ -19,9 +19,26 @@ except ImportError:
     pass
 
 # Import bot modules
+# Config is lightweight (only uses os) — safe to import at top level
 from config import Config
-from binance_client import BinanceFuturesClient
-from smart_bot_engine import SmartBotEngine
+# Heavy modules (pandas, numpy, sklearn, xgboost) are lazy-imported
+# to let gunicorn bind the port ASAP and avoid Render "No open ports" warning
+BinanceFuturesClient = None  # lazy
+SmartBotEngine = None  # lazy
+_heavy_imports_done = False
+
+
+def _ensure_heavy_imports():
+    """Lazy-load heavy modules on first use, not at startup."""
+    global BinanceFuturesClient, SmartBotEngine, _heavy_imports_done
+    if _heavy_imports_done:
+        return
+    from binance_client import BinanceFuturesClient as _BFC
+    from smart_bot_engine import SmartBotEngine as _SBE
+    BinanceFuturesClient = _BFC
+    SmartBotEngine = _SBE
+    _heavy_imports_done = True
+    logger.info("✅ Heavy modules loaded")
 
 app = Flask(__name__)
 _flask_secret = os.environ.get("FLASK_SECRET_KEY")
@@ -223,6 +240,7 @@ class BotManager:
             self.add_log("🚀 Starting SmartBotEngine...")
             self.add_log("🛫 Running Pre-Flight Check...")
             
+            _ensure_heavy_imports()
             # Create SmartBotEngine - uses Config for all settings
             # Only pass dashboard overrides that differ from Config
             self.smart_bot = SmartBotEngine()  # Uses Config v2
@@ -388,6 +406,7 @@ def _get_client():
     Parse ban expiry để không retry vô ích trong lúc bị ban.
     BinanceFuturesClient(ping=False) chỉ gọi 1 API (time sync).
     """
+    _ensure_heavy_imports()
     global binance_client, _client_last_retry, _ban_until
     if binance_client is not None:
         return binance_client
