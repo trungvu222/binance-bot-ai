@@ -3,11 +3,13 @@ Web Dashboard cho Binance Trading Bot
 Simple web interface để control bot và monitor
 """
 
-from flask import Flask, render_template, jsonify, request
+from flask import Flask, render_template, jsonify, request, Response
 import asyncio
 import os
+import struct
 import threading
 import time
+import zlib
 from datetime import datetime
 from loguru import logger
 
@@ -2823,6 +2825,103 @@ def api_retrain_status():
             'total': len(_retrain_state['logs']),
             'result': _retrain_state['result'],
         })
+
+
+# ──────────────────── PWA Endpoints ────────────────────────────────────────
+def _make_solid_png(size):
+    """Generate a flat-color PNG icon using only built-in modules (no PIL needed)."""
+    r, g, b = 102, 126, 234  # #667eea — app brand colour
+    row = bytes([r, g, b] * size)
+    raw = b''.join(b'\x00' + row for _ in range(size))
+    idat = zlib.compress(raw, 6)
+
+    def chunk(t, d):
+        c = t + d
+        return struct.pack('>I', len(d)) + c + struct.pack('>I', zlib.crc32(c) & 0xffffffff)
+
+    ihdr = struct.pack('>IIBBBBB', size, size, 8, 2, 0, 0, 0)
+    return b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', ihdr) + chunk(b'IDAT', idat) + chunk(b'IEND', b'')
+
+
+_pwa_icon_192 = None
+_pwa_icon_512 = None
+
+
+@app.route('/manifest.json')
+def pwa_manifest():
+    return jsonify({
+        "name": "Binance Trading Bot",
+        "short_name": "TradeBot",
+        "description": "AI Binance Futures Trading Dashboard",
+        "start_url": "/",
+        "scope": "/",
+        "display": "standalone",
+        "orientation": "any",
+        "background_color": "#667eea",
+        "theme_color": "#667eea",
+        "categories": ["finance", "utilities"],
+        "icons": [
+            {"src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable"},
+            {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"}
+        ]
+    })
+
+
+@app.route('/icon-192.png')
+def pwa_icon_192():
+    global _pwa_icon_192
+    if _pwa_icon_192 is None:
+        _pwa_icon_192 = _make_solid_png(192)
+    return Response(_pwa_icon_192, mimetype='image/png',
+                    headers={'Cache-Control': 'public, max-age=86400'})
+
+
+@app.route('/icon-512.png')
+def pwa_icon_512():
+    global _pwa_icon_512
+    if _pwa_icon_512 is None:
+        _pwa_icon_512 = _make_solid_png(512)
+    return Response(_pwa_icon_512, mimetype='image/png',
+                    headers={'Cache-Control': 'public, max-age=86400'})
+
+
+@app.route('/sw.js')
+def service_worker():
+    sw_code = r"""const CACHE = 'tradebot-v1';
+const SHELL = ['/', '/manifest.json', '/icon-192.png'];
+
+self.addEventListener('install', e => {
+  e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)));
+  self.skipWaiting();
+});
+
+self.addEventListener('activate', e => {
+  e.waitUntil(
+    caches.keys().then(keys =>
+      Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))
+    )
+  );
+  self.clients.claim();
+});
+
+self.addEventListener('fetch', e => {
+  if (e.request.method !== 'GET') return;
+  const url = new URL(e.request.url);
+  if (url.pathname.startsWith('/api/')) return;
+  e.respondWith(
+    fetch(e.request)
+      .then(resp => {
+        const clone = resp.clone();
+        caches.open(CACHE).then(c => c.put(e.request, clone));
+        return resp;
+      })
+      .catch(() => caches.match(e.request))
+  );
+});
+"""
+    return Response(sw_code.strip(), mimetype='application/javascript',
+                    headers={'Service-Worker-Allowed': '/'})
+# ────────────────────────────────────────────────────────────────────────────
 
 
 if __name__ == "__main__":
