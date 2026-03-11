@@ -25,14 +25,9 @@ from train_ai_improved import (
 )
 from continuous_learning_engine import ContinuousLearningEngine
 
-# Import Advanced AI Engine
-try:
-    from advanced_ai_engine import AdvancedAIEngine
-    HAS_ADVANCED_AI = True
-    logger.info("✅ Advanced AI Engine available")
-except ImportError:
-    HAS_ADVANCED_AI = False
-    logger.warning("⚠️ Advanced AI Engine not available, using basic models")
+# Advanced AI Engine disabled — bot uses V7 GB ensemble models
+# Importing it triggers TensorFlow import (15-20s delay on servers without TF)
+HAS_ADVANCED_AI = False
 
 class SmartBotEngine:
     """
