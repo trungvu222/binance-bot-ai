@@ -2,8 +2,15 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>🤖 Binance Trading Bot Dashboard</title>
+    <!-- PWA -->
+    <link rel="manifest" href="/manifest.json">
+    <meta name="theme-color" content="#667eea">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="TradeBot">
+    <link rel="apple-touch-icon" href="/icon-192.png">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -292,17 +299,209 @@
             100% { width: 0%; }
         }
         
+        /* ======================================================
+           RESPONSIVE / PWA — iPhone-first
+           Breakpoints: 768 (tablet), 480 (phone), 390 (iPhone std)
+           ====================================================== */
+        :root {
+            --safe-t: env(safe-area-inset-top, 0px);
+            --safe-b: env(safe-area-inset-bottom, 0px);
+            --safe-l: env(safe-area-inset-left, 0px);
+            --safe-r: env(safe-area-inset-right, 0px);
+            --bnav-h: 64px; /* bottom nav height */
+        }
+
+        /* Smooth momentum scroll everywhere on iOS */
+        * { -webkit-overflow-scrolling: touch; }
+
+        /* ——— TABLET ——— */
         @media (max-width: 768px) {
-            .container { padding: 15px; }
-            .header h1 { font-size: 1.8em; }
-            .controls { flex-direction: column; align-items: center; }
+            body {
+                padding: 10px;
+                padding-left: max(10px, var(--safe-l));
+                padding-right: max(10px, var(--safe-r));
+                /* Space for fixed bottom nav + iPhone home indicator */
+                padding-bottom: calc(var(--bnav-h) + var(--safe-b) + 12px);
+            }
+            .container {
+                padding: 14px;
+                border-radius: 14px;
+            }
+            .header { margin-bottom: 18px; }
+            .header h1 { font-size: 1.5em; }
+            .header p { font-size: 0.82em; color: #555; }
+            .card { padding: 14px; margin-bottom: 14px; border-radius: 12px; }
+            .card h3 { font-size: 0.95em; }
+
+            /* Market cards → single column */
+            .market-grid { grid-template-columns: 1fr; gap: 12px; }
+            .market-card { padding: 14px; }
+            .market-price { font-size: 1.7em; }
+            .market-symbol { font-size: 1.1em; }
+            .market-stats { gap: 6px; }
+            .market-stat { padding: 7px; }
+            .market-stat-value { font-size: 0.9em; }
+
+            /* Analysis cards → single column */
+            .analysis-grid { grid-template-columns: 1fr; gap: 10px; }
+            .analysis-card { padding: 14px; }
+
+            /* Account overview → 2 × 2 */
+            .status-grid { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+            .status-card { padding: 10px; }
+            .status-label { font-size: 0.75em; }
+            .status-value { font-size: 1.1em; }
+
+            /* Positions table — keep h-scroll, enable smooth */
+            .pos-scroll-wrap {
+                overflow-x: auto;
+                -webkit-overflow-scrolling: touch;
+                border-radius: 8px;
+            }
+            .position-table { font-size: 0.8em; min-width: 700px; }
+            .position-table th,
+            .position-table td { padding: 8px 7px; }
+
+            /* Controls — 2-column grid */
+            .controls {
+                display: grid;
+                grid-template-columns: repeat(2, 1fr);
+                gap: 8px;
+            }
+            .btn {
+                padding: 14px 8px;
+                font-size: 13px;
+                min-height: 50px; /* Apple HIG 44 pt */
+                border-radius: 10px;
+            }
+
+            /* Logs */
+            .logs { height: 200px; font-size: 11.5px; }
+
+            /* Retrain terminal */
+            #retrain-terminal { height: 200px !important; font-size: 11px !important; }
+
+            /* Trade history summary → 2-col on phone */
+            .summary-grid { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+            .summary-item .value { font-size: 1.1em; }
+
+            /* Toast — bottom-anchored above nav bar */
+            .toast-container {
+                top: auto;
+                bottom: calc(var(--bnav-h) + var(--safe-b) + 14px);
+                right: 10px;
+                left: 10px;
+            }
+            .toast { min-width: unset; max-width: 100%; }
+        }
+
+        /* ——— PHONE (≤480px, e.g. iPhone SE) ——— */
+        @media (max-width: 480px) {
+            body { padding: 8px; padding-left: max(8px, var(--safe-l)); padding-right: max(8px, var(--safe-r)); }
+            .container { padding: 10px; }
+            .header h1 { font-size: 1.3em; }
+            .market-price { font-size: 1.5em; }
+            .market-logo { font-size: 1.4em; }
+            .btn { font-size: 12px; }
+            .summary-grid { grid-template-columns: repeat(2, 1fr); }
+            .status-grid { grid-template-columns: repeat(2, 1fr); }
+        }
+
+        /* ——— BOTTOM NAVIGATION BAR (mobile only) ——— */
+        .bottom-nav { display: none; }
+
+        @media (max-width: 768px) {
+            .bottom-nav {
+                display: flex;
+                position: fixed;
+                bottom: 0;
+                left: 0;
+                right: 0;
+                background: rgba(15, 15, 28, 0.97);
+                backdrop-filter: blur(24px);
+                -webkit-backdrop-filter: blur(24px);
+                height: calc(var(--bnav-h) + var(--safe-b));
+                padding: 0 4px;
+                padding-bottom: var(--safe-b);
+                z-index: 1000;
+                border-top: 1px solid rgba(255,255,255,0.10);
+                box-shadow: 0 -6px 28px rgba(0,0,0,0.45);
+                align-items: stretch;
+            }
+            .bnav-btn {
+                flex: 1;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                gap: 2px;
+                background: none;
+                border: none;
+                cursor: pointer;
+                padding: 4px 2px;
+                min-height: 44px;
+                border-radius: 10px;
+                transition: background 0.12s, transform 0.1s;
+                -webkit-tap-highlight-color: transparent;
+                color: white;
+                font-family: inherit;
+                text-decoration: none;
+            }
+            .bnav-btn:active {
+                background: rgba(255,255,255,0.13);
+                transform: scale(0.94);
+            }
+            .bnav-icon { font-size: 19px; line-height: 1.3; }
+            .bnav-label {
+                font-size: 9.5px;
+                color: rgba(255,255,255,0.60);
+                font-weight: 600;
+                letter-spacing: 0.2px;
+                white-space: nowrap;
+            }
+            .bnav-btn.bnav-danger .bnav-label { color: rgba(255,120,120,0.85); }
+        }
+
+        /* ——— iOS INSTALL BANNER ——— */
+        .ios-install-banner {
+            display: none;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            padding: 12px 14px;
+            border-radius: 14px;
+            margin-bottom: 12px;
+            font-size: 0.82em;
+            line-height: 1.45;
+            align-items: flex-start;
+            gap: 10px;
+            box-shadow: 0 4px 16px rgba(102,126,234,0.45);
+        }
+        .ios-install-banner.visible { display: flex; }
+        .ios-install-banner .banner-icon { font-size: 1.8em; flex-shrink: 0; margin-top: 1px; }
+        .ios-install-banner .banner-text { flex: 1; }
+        .ios-install-banner .banner-close {
+            background: rgba(255,255,255,0.22);
+            border: none; color: white; border-radius: 50%;
+            width: 26px; height: 26px; font-size: 13px;
+            cursor: pointer; flex-shrink: 0;
+            display: flex; align-items: center; justify-content: center;
         }
     </style>
 </head>
 <body>
+    <!-- iOS Install Banner (shown only in Safari, not in standalone mode) -->
+    <div class="ios-install-banner" id="ios-banner">
+        <span class="banner-icon">📲</span>
+        <span class="banner-text">
+            <strong>Install as App</strong> — Tap <strong>Share ⎙</strong> then
+            <strong>Add to Home Screen ＋</strong> to use offline like an iPhone app.
+        </span>
+        <button class="banner-close" onclick="dismissIOSBanner()" aria-label="Dismiss">✕</button>
+    </div>
+
     <!-- Toast Container -->
     <div class="toast-container" id="toast-container"></div>
-    
+
     <div class="container">
         <div class="header">
             <h1>🤖 Binance Trading Bot</h1>
@@ -449,7 +648,7 @@
         <!-- ACTIVE POSITIONS -->
         <div class="card">
             <h3>📊 Active Positions</h3>
-            <div style="overflow-x: auto;">
+            <div class="pos-scroll-wrap">
                 <table class="position-table">
                     <thead>
                         <tr>
@@ -1226,7 +1425,59 @@
             d.textContent = text;
             return d.innerHTML;
         }
+
+        // ==================== PWA / SERVICE WORKER ====================
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('/sw.js', { scope: '/' })
+                    .then(() => console.log('SW registered'))
+                    .catch(err => console.warn('SW error', err));
+            });
+        }
+
+        // ==================== iOS INSTALL BANNER ====================
+        (function () {
+            const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+            const isStandalone = window.navigator.standalone === true;
+            const dismissed = localStorage.getItem('ios-pwa-banner-v1');
+            if (isIOS && !isStandalone && !dismissed) {
+                const b = document.getElementById('ios-banner');
+                if (b) b.classList.add('visible');
+            }
+        })();
+
+        function dismissIOSBanner() {
+            localStorage.setItem('ios-pwa-banner-v1', '1');
+            const b = document.getElementById('ios-banner');
+            if (b) b.classList.remove('visible');
+        }
     </script>
+
+    <!-- ============================================================
+         BOTTOM NAVIGATION BAR — mobile / iPhone only (hidden on desktop)
+         ============================================================ -->
+    <nav class="bottom-nav" id="bottom-nav" role="navigation" aria-label="Quick controls">
+        <button class="bnav-btn" onclick="startBot()" aria-label="Start Bot">
+            <span class="bnav-icon">▶️</span>
+            <span class="bnav-label">START</span>
+        </button>
+        <button class="bnav-btn" onclick="stopBot()" aria-label="Stop Bot">
+            <span class="bnav-icon">⏹️</span>
+            <span class="bnav-label">STOP</span>
+        </button>
+        <button class="bnav-btn" onclick="checkBalance(); updatePositionsTable();" aria-label="Refresh Balance">
+            <span class="bnav-icon">💰</span>
+            <span class="bnav-label">BALANCE</span>
+        </button>
+        <button class="bnav-btn" onclick="refreshBotAnalysis()" aria-label="Refresh AI Analysis">
+            <span class="bnav-icon">🤖</span>
+            <span class="bnav-label">AI</span>
+        </button>
+        <button class="bnav-btn bnav-danger" onclick="emergencyCloseAll()" aria-label="Emergency Close All">
+            <span class="bnav-icon">🚨</span>
+            <span class="bnav-label">EMERGENCY</span>
+        </button>
+    </nav>
 </body>
 </html>
 
