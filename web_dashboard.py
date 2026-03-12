@@ -479,21 +479,32 @@ _init_thread = threading.Thread(
 _init_thread.start()
 
 
+def _safe_float(v, default=0.0):
+    """Convert to float safely — handles '', None, and bad strings."""
+    try:
+        f = float(v)
+        return f if f == f else default  # NaN guard
+    except (TypeError, ValueError):
+        return default
+
+
 def _calc_balance(account: dict) -> dict:
     """Tính balance từ account dict, fallback sang per-asset khi cần."""
-    total = float(account.get('totalWalletBalance', 0))
-    available = float(account.get('availableBalance', 0))
-    upnl = float(account.get('totalUnrealizedProfit', 0))
+    total = _safe_float(account.get('totalWalletBalance', 0))
+    available = _safe_float(account.get('availableBalance', 0))
+    upnl = _safe_float(account.get('totalUnrealizedProfit', 0))
 
     # Fallback: tổng từng asset nếu totalWalletBalance = 0
     if total == 0:
         for asset in account.get('assets', []):
-            wb = float(asset.get('walletBalance', 0))
+            wb = _safe_float(asset.get('walletBalance', 0))
             if wb > 0:
                 total += wb
-                available += float(asset.get('availableBalance',
-                                             asset.get('marginAvailable', 0)))
-                upnl += float(asset.get('unrealizedProfit', 0))
+                available += _safe_float(
+                    asset.get('availableBalance',
+                               asset.get('marginAvailable', 0))
+                )
+                upnl += _safe_float(asset.get('unrealizedProfit', 0))
     return {'total': total, 'available': available, 'upnl': upnl}
 
 
