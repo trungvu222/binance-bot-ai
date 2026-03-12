@@ -2164,19 +2164,22 @@ def get_portfolio_summary():
         bal = _calc_balance(account_info)
         total_wallet_balance = bal['total']
         total_unrealized_pnl = bal['upnl']
-        total_margin_balance = float(
-            account_info.get('totalMarginBalance', total_wallet_balance)
-        ) or total_wallet_balance
-        
+        total_margin_balance = (
+            _safe_float(
+                account_info.get('totalMarginBalance'),
+                total_wallet_balance
+            ) or total_wallet_balance
+        )
+
         # Fallback: if account-level totalUnrealizedProfit is 0 but there are
         # positions, sum per-position unRealizedProfit for a more accurate value.
         if total_unrealized_pnl == 0:
             try:
                 open_positions = client.get_open_positions()
                 summed = sum(
-                    float(p.get('unRealizedProfit', 0))
+                    _safe_float(p.get('unRealizedProfit', 0))
                     for p in open_positions
-                    if float(p.get('positionAmt', 0)) != 0
+                    if _safe_float(p.get('positionAmt', 0)) != 0
                 )
                 if summed != 0:
                     total_unrealized_pnl = summed
@@ -2185,7 +2188,10 @@ def get_portfolio_summary():
 
         # Get positions for count - use the method that supports demo mode
         positions = client.get_open_positions()
-        active_count = len([p for p in positions if float(p.get('positionAmt', 0)) != 0])
+        active_count = len([
+            p for p in positions
+            if _safe_float(p.get('positionAmt', 0)) != 0
+        ])
         
         result = {
             'success': True,
