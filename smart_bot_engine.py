@@ -970,7 +970,9 @@ class SmartBotEngine:
             )
         return signal, confidence
 
-    async def check_risk_before_trade(self, symbol, side):
+    async def check_risk_before_trade(
+        self, symbol, side, bypass_soft_filters=False
+    ):
         """
         ⚠️ Check risk limits before opening position
         V2: Thêm market regime, correlation, funding rate,
@@ -1030,33 +1032,39 @@ class SmartBotEngine:
                     f"(80% of {max_dd}%) - reducing size"
                 )
         
-        # === NEW: Market regime filter (ADX) ===
-        regime_ok, regime_msg = await self.check_market_regime(
-            symbol
-        )
-        if not regime_ok:
-            return False, regime_msg
-        
-        # === NEW: Correlation check ===
-        corr_ok, corr_msg = await self.check_correlation(
-            symbol, side, current_positions
-        )
-        if not corr_ok:
-            return False, corr_msg
-        
-        # === NEW: Funding rate check ===
-        fund_ok, fund_msg = await self.check_funding_rate(
-            symbol, side
-        )
-        if not fund_ok:
-            return False, fund_msg
-        
-        # === NEW: Volatility spike check ===
-        vol_ok, vol_msg = await self.check_volatility_spike(
-            symbol
-        )
-        if not vol_ok:
-            return False, vol_msg
+        if not bypass_soft_filters:
+            # === NEW: Market regime filter (ADX) ===
+            regime_ok, regime_msg = await self.check_market_regime(
+                symbol
+            )
+            if not regime_ok:
+                return False, regime_msg
+
+            # === NEW: Correlation check ===
+            corr_ok, corr_msg = await self.check_correlation(
+                symbol, side, current_positions
+            )
+            if not corr_ok:
+                return False, corr_msg
+
+            # === NEW: Funding rate check ===
+            fund_ok, fund_msg = await self.check_funding_rate(
+                symbol, side
+            )
+            if not fund_ok:
+                return False, fund_msg
+
+            # === NEW: Volatility spike check ===
+            vol_ok, vol_msg = await self.check_volatility_spike(
+                symbol
+            )
+            if not vol_ok:
+                return False, vol_msg
+        else:
+            logger.info(
+                f"   ⚡ Startup priority entry for {symbol}: "
+                f"bypassing soft filters"
+            )
         
         return True, "OK"
     
@@ -1219,7 +1227,9 @@ class SmartBotEngine:
             logger.warning(f"Volatility check error: {e}")
             return True, "OK"
     
-    async def execute_trade(self, signal_data):
+    async def execute_trade(
+        self, signal_data, bypass_soft_filters=False
+    ):
         """
         🚀 Execute trade v2.0
         - Leverage 20x (BTC/ETH/SOL)
@@ -1237,7 +1247,9 @@ class SmartBotEngine:
             
             # Check risk (v2 - includes all filters)
             can_trade, reason = await self.check_risk_before_trade(
-                symbol, signal
+                symbol,
+                signal,
+                bypass_soft_filters=bypass_soft_filters,
             )
             if not can_trade:
                 logger.warning(
@@ -2440,6 +2452,7 @@ class SmartBotEngine:
         await self._sync_positions_from_exchange()
         
         symbols = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT']
+        startup_priority_entry_done = False
         
         while self.is_running:
             try:
@@ -2604,6 +2617,37 @@ class SmartBotEngine:
                             f"{min_conf}%) → Skip"
                         )
                         continue
+
+                    # ===== STARTUP PRIORITY ENTRY =====
+                    # Mục tiêu: vừa START là có thể vào lệnh ngay nếu
+                    # đã có tín hiệu đủ mạnh, không chờ các soft filters.
+                    # Chỉ áp dụng 1 lần sau khi bot vừa khởi động.
+                    if not startup_priority_entry_done:
+                        startup_min_conf = max(
+                            35,
+                            min_conf
+                        )
+                        if confidence >= startup_min_conf:
+                            logger.info(
+                                "   ⚡ STARTUP PRIORITY: "
+                                "executing immediate entry"
+                            )
+                            success, result = await self.execute_trade(
+                                signal_data,
+                                bypass_soft_filters=True,
+                            )
+                            startup_priority_entry_done = True
+                            if success:
+                                logger.info(
+                                    "   ✅ Startup entry executed"
+                                )
+                            else:
+                                logger.warning(
+                                    f"   ❌ Startup entry failed: "
+                                    f"{result}"
+                                )
+                            await asyncio.sleep(2)
+                            continue
 
                     # ===== QUALITY GATE V2 =====
                     # Extra filters to boost win rate
