@@ -15,6 +15,16 @@ def _env_float(name: str, default: float) -> float:
         return float(default)
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    """Read bool env var safely with fallback."""
+    val = os.environ.get(name)
+    if val is None:
+        return bool(default)
+    return str(val).strip().lower() in (
+        '1', 'true', 'yes', 'y', 'on'
+    )
+
+
 class Config:
     """Cấu hình bot trading với bảo mật cao"""
 
@@ -101,6 +111,12 @@ class Config:
         # $4 ≈ 100,000 VND | Bot tự scale position size để đạt mục tiêu này
         # Override bằng env: MIN_PROFIT_TARGET_USD
         "min_profit_target_usd": _env_float('MIN_PROFIT_TARGET_USD', 4.0),
+        # Auto mode: có LONG/SHORT là vào lệnh ngay
+        # (bỏ qua confidence/quality/soft filters)
+        # Override bằng env: FORCE_ENTRY_ON_SIGNAL=true/false
+        "force_entry_on_signal": _env_bool(
+            'FORCE_ENTRY_ON_SIGNAL', True
+        ),
         "max_position_size_percent": 30.0,  # 30% - dùng làm baseline
         "stop_loss_percent": 1.5,  # SL 1.5%
         "take_profit_percent": 3.0,  # TP 3% (R:R = 1:2)
