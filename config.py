@@ -80,14 +80,15 @@ class Config:
         "default_symbol": "BTCUSDT",
         "timeframes": ["1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"],
         "max_open_positions": 3,  # Tối đa 3 lệnh cùng lúc (chia đều vốn)
-        "default_leverage": 15,  # Đòn bẩy mặc định 15x (an toàn)
+        "default_leverage": 20,  # Đòn bẩy mặc định 20x
         "max_leverage": 25,  # Đòn bẩy tối đa 25x
-        
-        # Leverage theo symbol - An toàn, phù hợp SL 1.5%
+
+        # Leverage theo symbol
+        # 20x BTC/ETH/SOL: đủ để 1 lệnh lời ~100k VND với $10
         "symbol_leverage": {
-            "BTCUSDT": 15,
-            "ETHUSDT": 15,
-            "SOLUSDT": 10
+            "BTCUSDT": 20,
+            "ETHUSDT": 20,
+            "SOLUSDT": 20
         }
     }
     
@@ -96,7 +97,11 @@ class Config:
     # Đòn bẩy 100x -> Khối lượng thực = $267/lệnh
     RISK_MANAGEMENT = {
         "min_start_balance_usd": _env_float('MIN_START_BALANCE_USD', 5.0),
-        "max_position_size_percent": 30.0,  # 30% balance mỗi lệnh (chia 3 lệnh)
+        # Mục tiêu lợi nhuận tối thiểu mỗi lệnh (USD)
+        # $4 ≈ 100,000 VND | Bot tự scale position size để đạt mục tiêu này
+        # Override bằng env: MIN_PROFIT_TARGET_USD
+        "min_profit_target_usd": _env_float('MIN_PROFIT_TARGET_USD', 4.0),
+        "max_position_size_percent": 30.0,  # 30% - dùng làm baseline
         "stop_loss_percent": 1.5,  # SL 1.5%
         "take_profit_percent": 3.0,  # TP 3% (R:R = 1:2)
         "max_daily_loss_percent": 5.0,  # Max loss 5%/ngày
