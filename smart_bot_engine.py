@@ -106,6 +106,9 @@ class SmartBotEngine:
             'max_drawdown_pct': risk_cfg.get(
                 'max_drawdown_percent', 10
             ),
+            'min_start_balance': risk_cfg.get(
+                'min_start_balance_usd', 5.0
+            ),
             # Leverage theo symbol - an toàn
             'symbol_leverage': trading_cfg.get(
                 'symbol_leverage', {
@@ -218,12 +221,17 @@ class SmartBotEngine:
         try:
             balance = float(account['totalWalletBalance'])
             available = float(account['availableBalance'])
-            
-            min_balance = 100  # Minimum $100 to trade
+
+            min_balance = float(
+                self.risk_settings.get('min_start_balance', 5.0)
+            )
             if balance < min_balance:
                 logger.error(f"   ❌ Balance too low: ${balance:.2f} < ${min_balance}")
                 checks.append(False)
-                return False, f"Balance too low: ${balance:.2f}"
+                return False, (
+                    f"Balance too low: ${balance:.2f} "
+                    f"(minimum ${min_balance:.2f})"
+                )
             
             logger.info(f"   ✅ Balance: ${balance:.2f} (Available: ${available:.2f})")
             checks.append(True)
@@ -295,6 +303,8 @@ class SmartBotEngine:
             if not (0.5 <= self.risk_settings['daily_max_loss'] <= 50):
                 return False
             if not (1 <= self.risk_settings['max_positions'] <= 10):
+                return False
+            if not (0 <= self.risk_settings['min_start_balance'] <= 100000):
                 return False
             
             return True
