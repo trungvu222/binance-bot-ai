@@ -109,6 +109,9 @@ class SmartBotEngine:
             'min_start_balance': risk_cfg.get(
                 'min_start_balance_usd', 5.0
             ),
+            'force_entry_on_signal': risk_cfg.get(
+                'force_entry_on_signal', True
+            ),
             # Mục tiêu lãi tối thiểu mỗi lệnh (USD)
             # $4 ≈ 100k VND — bot scale position nếu cần
             'min_profit_target_usd': risk_cfg.get(
@@ -2606,11 +2609,21 @@ class SmartBotEngine:
                         logger.info("   ⏭️ HOLD")
                         continue
                     
-                    # Skip low confidence
                     min_conf = self.risk_settings[
                         'min_confidence'
                     ]
-                    if confidence < min_conf:
+                    force_entry = (
+                        self.mode == 'auto'
+                        and self.risk_settings.get(
+                            'force_entry_on_signal', True
+                        )
+                    )
+
+                    # Skip low confidence (unless force-entry)
+                    if (
+                        not force_entry
+                        and confidence < min_conf
+                    ):
                         logger.info(
                             f"   ⚠️ Low confidence "
                             f"({confidence:.1f}% < "
@@ -2651,15 +2664,21 @@ class SmartBotEngine:
 
                     # ===== QUALITY GATE V2 =====
                     # Extra filters to boost win rate
-                    skip_reason = self._quality_gate(
-                        symbol, signal_data
-                    )
-                    if skip_reason:
-                        logger.info(
-                            f"   🚫 Quality gate: "
-                            f"{skip_reason}"
+                    if not force_entry:
+                        skip_reason = self._quality_gate(
+                            symbol, signal_data
                         )
-                        continue
+                        if skip_reason:
+                            logger.info(
+                                f"   🚫 Quality gate: "
+                                f"{skip_reason}"
+                            )
+                            continue
+                    else:
+                        logger.info(
+                            "   ⚡ FORCE ENTRY mode: "
+                            "skip confidence/quality gates"
+                        )
                     
                     # Execute based on mode
                     if self.mode == 'auto':
@@ -2668,7 +2687,8 @@ class SmartBotEngine:
                         )
                         success, result = (
                             await self.execute_trade(
-                                signal_data
+                                signal_data,
+                                bypass_soft_filters=force_entry,
                             )
                         )
                         if success:
