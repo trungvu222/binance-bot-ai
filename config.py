@@ -7,6 +7,14 @@ import os
 from typing import Dict, Any
 
 
+def _env_float(name: str, default: float) -> float:
+    """Read float env var safely with fallback."""
+    try:
+        return float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return float(default)
+
+
 class Config:
     """Cấu hình bot trading với bảo mật cao"""
 
@@ -87,6 +95,7 @@ class Config:
     # Với 200.000 VNĐ (~$8), chia 3 lệnh = ~$2.67/lệnh
     # Đòn bẩy 100x -> Khối lượng thực = $267/lệnh
     RISK_MANAGEMENT = {
+        "min_start_balance_usd": _env_float('MIN_START_BALANCE_USD', 5.0),
         "max_position_size_percent": 30.0,  # 30% balance mỗi lệnh (chia 3 lệnh)
         "stop_loss_percent": 1.5,  # SL 1.5%
         "take_profit_percent": 3.0,  # TP 3% (R:R = 1:2)
