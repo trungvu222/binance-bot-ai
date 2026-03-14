@@ -109,12 +109,17 @@ class SmartBotEngine:
             'min_start_balance': risk_cfg.get(
                 'min_start_balance_usd', 5.0
             ),
-            # Leverage theo symbol - an toàn
+            # Mục tiêu lãi tối thiểu mỗi lệnh (USD)
+            # $4 ≈ 100k VND — bot scale position nếu cần
+            'min_profit_target_usd': risk_cfg.get(
+                'min_profit_target_usd', 4.0
+            ),
+            # Leverage theo symbol — 20x đủ đạt 100k/lệnh
             'symbol_leverage': trading_cfg.get(
                 'symbol_leverage', {
-                    'BTCUSDT': 15,
-                    'ETHUSDT': 15,
-                    'SOLUSDT': 10
+                    'BTCUSDT': 20,
+                    'ETHUSDT': 20,
+                    'SOLUSDT': 20
                 }
             ),
             # === AUTO-CLOSE PROTECTIONS ===
@@ -1217,7 +1222,8 @@ class SmartBotEngine:
     async def execute_trade(self, signal_data):
         """
         🚀 Execute trade v2.0
-        - Leverage an toàn (15x BTC/ETH, 10x SOL)
+        - Leverage 20x (BTC/ETH/SOL)
+        - Dynamic position size: tự scale đạt min_profit_target
         - Position size có điều chỉnh theo volatility
         - Partial TP (50% / 30% / 20%)
         - Breakeven tracking
@@ -1272,7 +1278,45 @@ class SmartBotEngine:
                 'max_position_size'
             ] / 100
             position_value = balance * pos_size_pct
-            
+
+            # === MIN PROFIT TARGET: tự scale position size ===
+            # Nếu base position quá nhỏ (tài khoản nhỏ), tăng lên
+            # sao cho 1 lệnh thắng >= min_profit_target_usd
+            min_profit_usd = float(
+                self.risk_settings.get(
+                    'min_profit_target_usd', 4.0
+                )
+            )
+            tp_rate = self.risk_settings.get(
+                'tp_percentage', 3.0
+            ) / 100  # e.g. 0.03
+            if (
+                min_profit_usd > 0
+                and tp_rate > 0
+                and leverage > 0
+            ):
+                required = min_profit_usd / (
+                    leverage * tp_rate
+                )
+                if required > position_value:
+                    logger.info(
+                        f"   🎯 Scale position "
+                        f"${position_value:.2f}"
+                        f"→${required:.2f} "
+                        f"(target ≥$"
+                        f"{min_profit_usd:.1f}/trade)"
+                    )
+                    position_value = required
+
+            # Safety cap: không vượt 80% balance
+            max_pos = balance * 0.80
+            if position_value > max_pos:
+                logger.warning(
+                    f"   ⚠️ Position capped 80%: "
+                    f"${position_value:.2f}→${max_pos:.2f}"
+                )
+                position_value = max_pos
+
             # Adjust for volatility spike
             atr_data = self.atr_history.get(symbol, {})
             atr_ratio = atr_data.get('ratio', 1.0)
