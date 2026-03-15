@@ -42,7 +42,7 @@ class ContinuousLearningEngine:
         # Thresholds
         self.min_accuracy = 60  # Nếu accuracy < 60% → re-train ngay
         self.min_trades_for_retrain = 100  # Học sau 100 trades
-        self.retrain_interval_hours = 24  # Re-train mỗi 24h
+        self.retrain_interval_hours = 6  # Re-train mỗi 6h
         
         # Load performance history
         self.load_performance_history()
@@ -110,120 +110,42 @@ class ContinuousLearningEngine:
     
     async def train_model_realtime(self, symbol, lookback_days=7):
         """
-        🎓 TRAIN MODEL với dữ liệu REAL-TIME mới nhất
-        lookback_days: Số ngày dữ liệu để train (default 7 ngày)
-        Note: Binance max limit 1500 candles
+        🎓 TRAIN MODEL với V8 pipeline đầy đủ
+        Dùng retrain_v8.train_symbol_v8() để đảm bảo consistency
+        với training pipeline chính (binary labels, ensemble, HTF, etc.)
         """
         logger.info(f"\n{'='*70}")
-        logger.info(f"🎓 REAL-TIME TRAINING: {symbol}")
+        logger.info(f"🎓 REAL-TIME TRAINING (V8): {symbol}")
         logger.info(f"{'='*70}")
-        
+
         try:
-            # Calculate candles needed (7 days = 2016 candles of 5m)
-            # But Binance max is 1500, so cap it
-            num_candles = min(lookback_days * 288, 1500)  # 288 candles per day (5m interval)
-            actual_days = num_candles / 288
-            
-            # Download fresh data
-            logger.info(f"📥 Downloading {num_candles} candles (~{actual_days:.1f} days)...")
-            klines = self.client.get_klines(symbol, "5m", num_candles)
-            
-            if not klines:
-                logger.error(f"❌ No data for {symbol}")
+            # Use V8 pipeline (walk-forward, ensemble, feature selection)
+            from retrain_v8 import train_symbol_v8
+            result = train_symbol_v8(symbol)
+
+            if result is None:
+                logger.error(f"❌ V8 training failed for {symbol}")
                 return False
-            
-            logger.info(f"✅ Downloaded {len(klines)} candles")
-            logger.info(f"📅 Data range: {klines[0][0]} to {klines[-1][0]}")
-            
-            # Prepare dataframe with indicators
-            logger.info("📊 Calculating indicators...")
-            df = self.analyzer.prepare_dataframe(klines)
-            df = self.analyzer.add_basic_indicators(df)
-            df = self.analyzer.add_advanced_indicators(df)
-            
-            # Create labels
-            logger.info("🏷️ Creating smart labels...")
-            labels = create_smart_labels(
-                df, future_bars=12, threshold=0.006
-            )
-            df['label'] = labels
-            
-            # Prepare features
-            logger.info("🔧 Preparing advanced features...")
-            X, feature_names = prepare_advanced_features(df)
-            y = df['label'].values
-            
-            # Remove invalid samples
-            valid_mask = ~np.isnan(X).any(axis=1) & ~np.isnan(y)
-            X = X[valid_mask]
-            y = y[valid_mask]
-            
-            logger.info(f"📈 Dataset: {len(X)} samples, {X.shape[1]} features")
-            logger.info(f"📊 Label distribution: LONG={np.sum(y==1)}, SHORT={np.sum(y==-1)}, HOLD={np.sum(y==0)}")
-            
-            # Time-series split (no data leak)
-            split_idx = int(len(X) * 0.8)
-            X_train = X[:split_idx]
-            X_test = X[split_idx:]
-            y_train = y[:split_idx]
-            y_test = y[split_idx:]
-            
-            # Train model with V3 anti-overfit params
-            logger.info("🤖 Training Gradient Boosting model...")
-            model = GradientBoostingClassifier(
-                n_estimators=300,
-                learning_rate=0.01,    # was 0.03
-                max_depth=4,           # was 6
-                subsample=0.75,
-                min_samples_split=20,
-                min_samples_leaf=15,   # was 5 → stronger regularization
-                max_features='sqrt',
-                random_state=42
-            )
-            model.fit(X_train, y_train)
-            
-            # Evaluate
-            train_accuracy = model.score(X_train, y_train) * 100
-            test_accuracy = model.score(X_test, y_test) * 100
-            
-            logger.info(f"✅ Train Accuracy: {train_accuracy:.2f}%")
-            logger.info(f"✅ Test Accuracy: {test_accuracy:.2f}%")
-            
-            # Save model
-            os.makedirs('models', exist_ok=True)
-            model_path = f'models/gradient_boost_{symbol}.pkl'
-            
-            model_data = {
-                'model': model,
-                'accuracy': test_accuracy,
-                'feature_names': feature_names,
-                'trained_at': datetime.now().isoformat(),
-                'data_range_days': actual_days,
-                'num_samples': len(X),
-                'label_distribution': {
-                    'LONG': int(np.sum(y==1)),
-                    'SHORT': int(np.sum(y==-1)),
-                    'HOLD': int(np.sum(y==0))
-                }
-            }
-            
-            joblib.dump(model_data, model_path)
-            logger.info(f"💾 Model saved to {model_path}")
-            
+
             # Update tracking
             self.last_train_time[symbol] = datetime.now()
             self.performance_log[symbol] = {
-                'recent_accuracy': test_accuracy,
-                'train_accuracy': train_accuracy,
+                'recent_accuracy': result['ensemble'],
+                'train_accuracy': result['gb'],
                 'trained_at': datetime.now().isoformat(),
                 'trades_since_last_train': 0,
-                'lookback_days': actual_days
+                'cv_accuracy': result['cv'],
+                'wf_accuracy': result['wf'],
             }
             self.save_performance_history()
-            
-            logger.info(f"✅ Training completed for {symbol}")
+
+            logger.info(
+                f"✅ V8 training done: {symbol} "
+                f"ensemble={result['ensemble']:.1f}% "
+                f"CV={result['cv']:.1f}%"
+            )
             return True
-            
+
         except Exception as e:
             logger.error(f"❌ Training failed for {symbol}: {e}")
             import traceback
