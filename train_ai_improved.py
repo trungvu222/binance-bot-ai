@@ -24,9 +24,133 @@ except ImportError:
 from binance_client import BinanceFuturesClient
 from technical_analysis import TechnicalAnalyzer
 import logging
+import requests as _http_req
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)-8s | %(message)s', datefmt='%H:%M:%S')
 logger = logging.getLogger(__name__)
+
+
+# ═════════════════════════════════════════════════════════════
+# NEW FEATURES: Funding Rate + Open Interest + Market Regime
+# ═════════════════════════════════════════════════════════════
+
+def fetch_funding_rate_history(symbol, limit=500):
+    """
+    Lấy lịch sử Funding Rate từ Binance Futures.
+    Funding rate > 0: Longs trả Shorts (thị trường quá bullish → bearish signal)
+    Funding rate < 0: Shorts trả Longs (thị trường quá bearish → bullish signal)
+    Returns DataFrame with timestamp + funding_rate columns.
+    """
+    url = "https://fapi.binance.com/fapi/v1/fundingRate"
+    try:
+        resp = _http_req.get(url, params={
+            'symbol': symbol, 'limit': limit
+        }, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        if not data:
+            return None
+        df = pd.DataFrame(data)
+        df['timestamp'] = pd.to_numeric(df['fundingTime'])
+        df['funding_rate'] = df['fundingRate'].astype(float)
+        # Derived features
+        df['funding_rate_abs'] = df['funding_rate'].abs()
+        df['funding_rate_ma3'] = df['funding_rate'].rolling(3).mean().fillna(0)
+        df['funding_rate_ma8'] = df['funding_rate'].rolling(8).mean().fillna(0)
+        df['funding_extreme'] = (df['funding_rate_abs'] > 0.001).astype(int)
+        return df[['timestamp', 'funding_rate', 'funding_rate_abs',
+                    'funding_rate_ma3', 'funding_rate_ma8', 'funding_extreme']]
+    except Exception as e:
+        logger.warning(f"   ⚠️ Funding rate fetch failed: {e}")
+        return None
+
+
+def fetch_open_interest_history(symbol, period='5m', limit=500):
+    """
+    Lấy lịch sử Open Interest (OI) từ Binance Futures.
+    OI tăng + giá tăng = trend mạnh (mới vào lệnh)
+    OI giảm + giá tăng = short squeeze (yếu)
+    OI tăng + giá giảm = trend giảm mạnh
+    OI giảm + giá giảm = long squeeze (yếu)
+    Returns DataFrame with OI features.
+    """
+    url = "https://fapi.binance.com/futures/data/openInterestHist"
+    try:
+        resp = _http_req.get(url, params={
+            'symbol': symbol, 'period': period, 'limit': limit
+        }, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        if not data:
+            return None
+        df = pd.DataFrame(data)
+        df['timestamp'] = pd.to_numeric(df['timestamp'])
+        df['oi_value'] = df['sumOpenInterestValue'].astype(float)
+        # Normalized OI change (stationary)
+        df['oi_change_pct'] = df['oi_value'].pct_change().fillna(0) * 100
+        df['oi_change_ma5'] = df['oi_change_pct'].rolling(5).mean().fillna(0)
+        # OI momentum: is OI accelerating or decelerating?
+        oi_ma20 = df['oi_value'].rolling(20).mean()
+        safe_ma20 = oi_ma20.replace(0, 1)
+        df['oi_ratio'] = (df['oi_value'] / safe_ma20).fillna(1)
+        df['oi_surge'] = (df['oi_ratio'] > 1.1).astype(int)
+        return df[['timestamp', 'oi_change_pct', 'oi_change_ma5',
+                    'oi_ratio', 'oi_surge']]
+    except Exception as e:
+        logger.warning(f"   ⚠️ Open interest fetch failed: {e}")
+        return None
+
+
+def compute_market_regime_features(df):
+    """
+    Market Regime Detection:
+    - TRENDING: ADX > 25, clear EMA alignment → trend-following signals work
+    - RANGING: ADX < 20, BB narrow → mean-reversion signals work
+    - VOLATILE: High ATR ratio, wide BB → reduce position size
+    Returns dict of features.
+    """
+    features = {}
+
+    # Regime scores (continuous, 0-1 range)
+    if 'adx' in df.columns and 'bb_width' in df.columns:
+        # Trending score: high ADX + wide BB
+        adx_norm = (df['adx'].clip(0, 60) / 60).fillna(0)
+        features['regime_trending'] = adx_norm.values
+
+        # Ranging score: low ADX + narrow BB
+        features['regime_ranging'] = (1 - adx_norm).values * (
+            1 - df['bb_width'].clip(0, 0.1).fillna(0) / 0.1
+        ).values
+
+    # Volatility regime
+    if 'atr' in df.columns and 'close' in df.columns:
+        atr_pct = (df['atr'] / df['close'].replace(0, 1) * 100).fillna(0)
+        atr_ma = atr_pct.rolling(50).mean().bfill()
+        safe_atr_ma = atr_ma.replace(0, 1)
+        vol_regime = (atr_pct / safe_atr_ma).fillna(1)
+        features['regime_volatile'] = vol_regime.values
+        features['regime_calm'] = (vol_regime < 0.8).astype(int).values
+        features['regime_storm'] = (vol_regime > 1.5).astype(int).values
+
+    # Trend consistency (how many of last N bars moved in same direction)
+    if 'close' in df.columns:
+        changes = (df['close'].diff() > 0).astype(int)
+        for window in [5, 10, 20]:
+            streak = changes.rolling(window).mean().fillna(0.5)
+            features[f'trend_consistency_{window}'] = streak.values
+            # 0.8+ = strong uptrend, 0.2- = strong downtrend
+
+    # Price position in range (0=at bottom, 1=at top)
+    if 'close' in df.columns:
+        for window in [20, 50]:
+            roll_high = df['high'].rolling(window).max()
+            roll_low = df['low'].rolling(window).min()
+            price_range = (roll_high - roll_low).replace(0, 1)
+            features[f'price_position_{window}'] = (
+                (df['close'] - roll_low) / price_range
+            ).fillna(0.5).values
+
+    return features
 
 
 def get_extended_klines(client, symbol, interval='5m', total_candles=8640):
@@ -48,53 +172,69 @@ def get_extended_klines(client, symbol, interval='5m', total_candles=8640):
     while len(all_klines) < total_candles:
         remaining = total_candles - len(all_klines)
         limit = min(batch_size, remaining)
-        try:
-            if use_public:
-                params = {
-                    'symbol': symbol,
-                    'interval': interval,
-                    'limit': limit,
-                }
-                if end_time:
-                    params['endTime'] = end_time
-                resp = _req.get(
-                    PUBLIC_URL, params=params, timeout=15
+
+        batch_ok = False
+        for retry in range(3):
+            try:
+                if use_public:
+                    params = {
+                        'symbol': symbol,
+                        'interval': interval,
+                        'limit': limit,
+                    }
+                    if end_time:
+                        params['endTime'] = end_time
+                    resp = _req.get(
+                        PUBLIC_URL, params=params, timeout=15
+                    )
+                    resp.raise_for_status()
+                    klines = resp.json()
+                else:
+                    kwargs = {
+                        'symbol': symbol,
+                        'interval': interval,
+                        'limit': limit,
+                    }
+                    if end_time:
+                        kwargs['endTime'] = end_time
+                    klines = client.client.futures_klines(
+                        **kwargs
+                    )
+
+                if not klines:
+                    break
+
+                # Prepend (older data goes first)
+                all_klines = klines + all_klines
+
+                # Set endTime to just before the oldest candle
+                end_time = klines[0][0] - 1
+
+                logger.info(
+                    f"   Fetched {len(klines)} candles, "
+                    f"total: {len(all_klines)}/{total_candles}"
                 )
-                resp.raise_for_status()
-                klines = resp.json()
-            else:
-                kwargs = {
-                    'symbol': symbol,
-                    'interval': interval,
-                    'limit': limit,
-                }
-                if end_time:
-                    kwargs['endTime'] = end_time
-                klines = client.client.futures_klines(
-                    **kwargs
-                )
 
-            if not klines:
-                break
+                batch_ok = True
+                break  # success, exit retry loop
 
-            # Prepend (older data goes first)
-            all_klines = klines + all_klines
+            except Exception as e:
+                if retry < 2:
+                    wait = 2 * (retry + 1)  # 2s, 4s
+                    logger.warning(
+                        f"   Batch retry {retry+1}/3 in {wait}s: {e}"
+                    )
+                    _time.sleep(wait)
+                else:
+                    logger.warning(f"   Batch failed after 3 retries: {e}")
 
-            # Set endTime to just before the oldest candle
-            end_time = klines[0][0] - 1
+        if not batch_ok:
+            break  # give up after 3 retries on same batch
 
-            logger.info(
-                f"   Fetched {len(klines)} candles, "
-                f"total: {len(all_klines)}/{total_candles}"
-            )
+        if not klines or len(klines) < limit:
+            break  # No more data available
 
-            if len(klines) < limit:
-                break  # No more data available
-
-            _time.sleep(0.3)  # Rate limit
-        except Exception as e:
-            logger.warning(f"   Pagination error: {e}")
-            break
+        _time.sleep(1.0)  # Throttle: 1s delay between batches
 
     # Remove duplicates by timestamp
     seen = set()
@@ -498,8 +638,22 @@ def prepare_advanced_features(df, htf_data=None):
         total = (df['high'] - df['low']).replace(0, 1)
         feature_dict['body_ratio'] = (body / total).values
 
-    # Higher-timeframe features — only stationary ones
-    htf_cols = [c for c in df.columns if c.startswith(('h1_', 'h4_'))]
+    # ===== MARKET REGIME FEATURES =====
+    regime_features = compute_market_regime_features(df)
+    feature_dict.update(regime_features)
+
+    # ===== FUNDING RATE features (if merged into df) =====
+    fr_cols = [c for c in df.columns if c.startswith('funding_')]
+    for col in fr_cols:
+        feature_dict[col] = df[col].fillna(0).values
+
+    # ===== OPEN INTEREST features (if merged into df) =====
+    oi_cols = [c for c in df.columns if c.startswith('oi_')]
+    for col in oi_cols:
+        feature_dict[col] = df[col].fillna(0).values
+
+    # Higher-timeframe features — only stationary ones (h1, h4, m15)
+    htf_cols = [c for c in df.columns if c.startswith(('h1_', 'h4_', 'm15_'))]
     for col in htf_cols:
         if any(k in col for k in ['rsi', 'adx', 'trend']):
             feature_dict[col] = df[col].fillna(0).values
@@ -521,21 +675,20 @@ def prepare_advanced_features(df, htf_data=None):
 
 def get_htf_features_for_training(client, analyzer, symbol):
     """
-    Lấy features từ 1h và 4h timeframe.
+    Lấy features từ 15m, 1h và 4h timeframe.
     Trả về dict chứa DataFrames có timestamp để merge_asof vào 5m.
     Falls back to public API if client fails.
     """
-    import requests as _req
     PUBLIC_URL = "https://fapi.binance.com/fapi/v1/klines"
 
     htf_dfs = {}
-    for tf, label in [('1h', 'h1'), ('4h', 'h4')]:
+    for tf, label in [('15m', 'm15'), ('1h', 'h1'), ('4h', 'h4')]:
         try:
             # Try client first, fallback to public API
             try:
                 klines = client.get_klines(symbol, tf, 500)
             except Exception:
-                resp = _req.get(PUBLIC_URL, params={
+                resp = _http_req.get(PUBLIC_URL, params={
                     'symbol': symbol,
                     'interval': tf,
                     'limit': 500
@@ -589,10 +742,26 @@ def train_symbol(symbol):
         return None
     logger.info(f"   Got {len(klines)} candles")
 
-    # Get HTF features
-    logger.info("📥 Fetching 1h & 4h HTF context...")
+    # Get HTF features (now includes 15m)
+    logger.info("📥 Fetching 15m, 1h & 4h HTF context...")
     htf_dfs = get_htf_features_for_training(client, analyzer, symbol)
     logger.info(f"   HTF timeframes: {list(htf_dfs.keys())}")
+
+    # Get Funding Rate history
+    logger.info("📥 Fetching Funding Rate history...")
+    fr_df = fetch_funding_rate_history(symbol, limit=500)
+    if fr_df is not None:
+        logger.info(f"   Got {len(fr_df)} funding rate records")
+    else:
+        logger.warning("   ⚠️ No funding rate data")
+
+    # Get Open Interest history
+    logger.info("📥 Fetching Open Interest history...")
+    oi_df = fetch_open_interest_history(symbol, period='5m', limit=500)
+    if oi_df is not None:
+        logger.info(f"   Got {len(oi_df)} OI records")
+    else:
+        logger.warning("   ⚠️ No open interest data")
 
     # Prepare dataframe
     logger.info("📊 Calculating indicators...")
@@ -600,9 +769,20 @@ def train_symbol(symbol):
     df = analyzer.add_basic_indicators(df)
     df = analyzer.add_advanced_indicators(df)
 
+    # Ensure timestamp column exists for all merge operations
+    if 'timestamp' not in df.columns:
+        # prepare_dataframe may use 'timestamp' or index; try to recover
+        if 'open_time' in df.columns:
+            df['timestamp'] = pd.to_numeric(df['open_time'])
+        elif hasattr(df.index, 'name') and df.index.name == 'timestamp':
+            df = df.reset_index()
+        else:
+            # Create from klines data directly
+            df['timestamp'] = [k[0] for k in klines[:len(df)]]
+    df['timestamp'] = pd.to_numeric(df['timestamp'])
+
     # Merge HTF features
     if htf_dfs:
-        df['timestamp'] = pd.to_numeric(df['timestamp'])
         df = df.sort_values('timestamp')
         for label, htf_df in htf_dfs.items():
             htf_df['timestamp'] = pd.to_numeric(htf_df['timestamp'])
@@ -611,6 +791,28 @@ def train_symbol(symbol):
                 df, htf_df, on='timestamp', direction='backward'
             )
         logger.info(f"   Merged HTF → {len(df.columns)} columns total")
+
+    # Merge Funding Rate
+    if fr_df is not None:
+        df['timestamp'] = pd.to_numeric(df['timestamp'])
+        fr_df['timestamp'] = pd.to_numeric(fr_df['timestamp'])
+        df = pd.merge_asof(
+            df.sort_values('timestamp'),
+            fr_df.sort_values('timestamp'),
+            on='timestamp', direction='backward'
+        )
+        logger.info(f"   Merged Funding Rate")
+
+    # Merge Open Interest
+    if oi_df is not None:
+        df['timestamp'] = pd.to_numeric(df['timestamp'])
+        oi_df['timestamp'] = pd.to_numeric(oi_df['timestamp'])
+        df = pd.merge_asof(
+            df.sort_values('timestamp'),
+            oi_df.sort_values('timestamp'),
+            on='timestamp', direction='backward'
+        )
+        logger.info(f"   Merged Open Interest")
 
     # ===== V6 LABELS: Binary (LONG vs SHORT only) =====
     logger.info("🏷️ Creating V7 BINARY labels (threshold=1.5%, max_bars=60)...")
