@@ -482,12 +482,8 @@ class SmartBotEngine:
                 prob_long = probabilities[1] * 100
                 prob_hold = 0
                 
-                # Confidence-based HOLD
-                confidence = max(prob_short, prob_long)
-                hold_threshold = 58
-                if confidence < hold_threshold:
-                    signal = 'HOLD'
-                elif prob_long >= prob_short:
+                # User yêu cầu vào lệnh ngay, chọn tín hiệu có xác suất cao hơn
+                if prob_long >= prob_short:
                     signal = 'LONG'
                 else:
                     signal = 'SHORT'
@@ -504,14 +500,12 @@ class SmartBotEngine:
                 class_idx = int(prediction) + 1
                 confidence = probabilities[class_idx] * 100
                 
-                override_threshold = 55
+                # User yêu cầu vào lệnh ngay, không HOLD
                 if signal == 'HOLD':
-                    if (prob_long > prob_short
-                            and prob_long >= override_threshold):
+                    if prob_long >= prob_short:
                         signal = 'LONG'
                         confidence = prob_long
-                    elif (prob_short > prob_long
-                            and prob_short >= override_threshold):
+                    else:
                         signal = 'SHORT'
                         confidence = prob_short
             
@@ -616,14 +610,12 @@ class SmartBotEngine:
             )
 
             # ============================================
-            # 🚨 REAL-TIME MOMENTUM SANITY CHECK
-            # (basic model path)
-            # Prevent counter-trend when price is strongly
-            # moving in one direction.
+            # 🚨 REAL-TIME MOMENTUM SANITY CHECK (Bỏ qua theo yêu cầu User)
+            # Không lọc tín hiệu nữa để đảm bảo bot vào lệnh liền
             # ============================================
-            signal, confidence = self._momentum_filter(
-                symbol, signal, confidence, df
-            )
+            # signal, confidence = self._momentum_filter(
+            #     symbol, signal, confidence, df
+            # )
 
             # Recalculate SL/TP after possible signal change
             if signal == 'LONG':
@@ -767,6 +759,9 @@ class SmartBotEngine:
         Extra quality checks to boost win rate.
         Returns skip reason string, or None if OK.
         """
+        # User yêu cầu vào lệnh liền, không cần check quality gate
+        return None
+
         try:
             signal = signal_data.get('signal', 'HOLD')
             confidence = signal_data.get('confidence', 0)
@@ -835,6 +830,9 @@ class SmartBotEngine:
         moving in one direction.
         Returns (signal, confidence) - possibly modified.
         """
+        # User yêu cầu vào lệnh liền, bỏ qua momentum filter
+        return signal, confidence
+
         try:
             closes = df['close'].values.astype(float)
             opens = df['open'].values.astype(float)
@@ -1035,8 +1033,8 @@ class SmartBotEngine:
                     f"(80% of {max_dd}%) - reducing size"
                 )
         
-        if not bypass_soft_filters:
-            # === NEW: Market regime filter (ADX) ===
+        # === NEW: Market regime filter (ADX) === (Đã bypass để vào lệnh ngay)
+        if not bypass_soft_filters and not self.risk_settings.get('force_entry_on_signal', True):
             regime_ok, regime_msg = await self.check_market_regime(
                 symbol
             )
@@ -2609,15 +2607,8 @@ class SmartBotEngine:
                         logger.info("   ⏭️ HOLD")
                         continue
                     
-                    min_conf = self.risk_settings[
-                        'min_confidence'
-                    ]
-                    force_entry = (
-                        self.mode == 'auto'
-                        and self.risk_settings.get(
-                            'force_entry_on_signal', True
-                        )
-                    )
+                    min_conf = 0 # User yêu cầu vào lệnh ngay, confidence min = 0
+                    force_entry = True # Bắt buộc vào lệnh ngay lập tức
 
                     # Skip low confidence (unless force-entry)
                     if (
